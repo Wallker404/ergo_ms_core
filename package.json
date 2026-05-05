@@ -35,6 +35,7 @@
     "uninstall-extensions": "Удаление всех установленных расширений из VSIX файлов"
   },
   "dependencies": {
-    "html2canvas": "^1.4.1"
+    "html2canvas": "^1.4.1",
+    "onnxruntime-web": "^1.24.3"
   }
 }
