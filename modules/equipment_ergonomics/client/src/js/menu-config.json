@@ -1,0 +1,11 @@
+{
+  "menuSections": [
+    {
+      "icon": "Wrench",
+      "routeName": "EquipmentErgonomics",
+      "name": "Эргономика техники",
+      "parentRoute": null,
+      "children": []
+    }
+  ]
+}
