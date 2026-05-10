@@ -5,6 +5,62 @@ from pathlib import Path
 
 from django.core.management.base import BaseCommand
 
+from src.core.cms.adp.menu.models import MenuItem
+
+
+MODULE_SOURCE = 'modules/equipment_ergonomics'
+ROOT_ROUTE = 'EquipmentErgonomics'
+ANALYSIS_ROUTE = 'EquipmentErgonomicsAnalysis'
+ROOT_NAME = 'Эргономика техники'
+ANALYSIS_NAME = 'Анализ данных'
+ROOT_ICON = 'Wrench'
+
+
+def _ensure_menu_items_active() -> None:
+    manager = MenuItem.objects  # type: ignore[attr-defined]
+    root = manager.filter(module_source=MODULE_SOURCE, route_name=ROOT_ROUTE, parent__isnull=True).first()
+    if root is None:
+        root = manager.create(
+            name=ROOT_NAME,
+            route_name=ROOT_ROUTE,
+            icon=ROOT_ICON,
+            item_type='route',
+            module_source=MODULE_SOURCE,
+            is_active=True,
+        )
+    else:
+        root.name = ROOT_NAME
+        root.icon = ROOT_ICON
+        root.item_type = 'route'
+        root.is_active = True
+        root.module_source = MODULE_SOURCE
+        root.save(update_fields=['name', 'icon', 'item_type', 'is_active', 'module_source', 'updated_at'])
+
+    child = manager.filter(module_source=MODULE_SOURCE, route_name=ANALYSIS_ROUTE, parent=root).first()
+    if child is None:
+        manager.create(
+            name=ANALYSIS_NAME,
+            route_name=ANALYSIS_ROUTE,
+            icon=None,
+            item_type='route',
+            parent=root,
+            module_source=MODULE_SOURCE,
+            is_active=True,
+        )
+    else:
+        child.name = ANALYSIS_NAME
+        child.item_type = 'route'
+        child.is_active = True
+        child.module_source = MODULE_SOURCE
+        child.save(update_fields=['name', 'item_type', 'is_active', 'module_source', 'updated_at'])
+
+    manager.filter(module_source=MODULE_SOURCE).exclude(id__in=[root.id]).update(is_active=True)
+
+
+def _deactivate_menu_items() -> int:
+    manager = MenuItem.objects  # type: ignore[attr-defined]
+    return manager.filter(module_source=MODULE_SOURCE, is_active=True).update(is_active=False)
+
 
 class Command(BaseCommand):
     help = 'Управление плагином equipment_ergonomics: status|enable|disable (archive/purge).'
@@ -60,8 +116,10 @@ class Command(BaseCommand):
                     'включение в БД сохранится, но плагин останется выключенным до снятия override.'
                 )
             set_enabled(True)
+            _ensure_menu_items_active()
             snap = get_snapshot()
             self.stdout.write(f'Плагин включен: {snap.is_enabled} (forced_disabled={snap.forced_disabled})')
+            self.stdout.write('Пункты меню модуля активированы.')
             return
 
         # disable
@@ -81,6 +139,8 @@ class Command(BaseCommand):
             self.stdout.write(f'Данные удалены из БД: {purge_result}')
 
         set_enabled(False, archive_path=archive_path, archive_meta=archive_meta)
+        deactivated_count = _deactivate_menu_items()
         snap = get_snapshot()
         self.stdout.write(f'Плагин выключен: {not snap.is_enabled} (forced_disabled={snap.forced_disabled})')
+        self.stdout.write(f'Пункты меню модуля скрыты: {deactivated_count}')
 

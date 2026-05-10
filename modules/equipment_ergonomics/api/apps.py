@@ -8,4 +8,4 @@ class EquipmentErgonomicsConfig(AppConfig):
     verbose_name = 'Эргономика техники'
 
     def ready(self):
-        pass
+        from . import integrations  # noqa: F401
