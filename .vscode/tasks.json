@@ -18,15 +18,28 @@
             "label": "Setup Full System",
             "type": "shell",
             "command": "powershell -ExecutionPolicy Bypass -File \"core/deployment/windows/ergo_ms.ps1\" setup-full && npm run install-extensions",
-            "options": { "cwd": "${workspaceFolder}" },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
             "windows": {
                 "options": {
-                    "shell": { "executable": "cmd.exe", "args": ["/d", "/c"] }
+                    "shell": {
+                        "executable": "cmd.exe",
+                        "args": [
+                            "/d",
+                            "/c"
+                        ]
+                    }
                 }
             },
             "linux": {
                 "options": {
-                    "shell": { "executable": "/bin/bash", "args": ["-lc"] }
+                    "shell": {
+                        "executable": "/bin/bash",
+                        "args": [
+                            "-lc"
+                        ]
+                    }
                 },
                 "command": "sudo bash core/deployment/linux/ergo_ms.sh setup-full && npm run install-extensions"
             },
@@ -36,17 +49,28 @@
                 "focus": true,
                 "panel": "shared"
             },
-            "group": { "kind": "build", "isDefault": false },
+            "group": {
+                "kind": "build",
+                "isDefault": false
+            },
             "problemMatcher": []
         },
         {
             "label": "Update Submodules",
             "type": "shell",
             "command": "ergoms update-submodules",
-            "options": { "cwd": "${workspaceFolder}" },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
             "windows": {
                 "options": {
-                    "shell": { "executable": "cmd.exe", "args": ["/d", "/c"] }
+                    "shell": {
+                        "executable": "cmd.exe",
+                        "args": [
+                            "/d",
+                            "/c"
+                        ]
+                    }
                 }
             },
             "presentation": {
@@ -55,22 +79,37 @@
                 "focus": true,
                 "panel": "new"
             },
-            "group": { "kind": "build" },
+            "group": {
+                "kind": "build"
+            },
             "problemMatcher": []
         },
         {
             "label": "Cache Warmup",
             "type": "shell",
             "command": "ergoms warmup-caches-if-needed",
-            "options": { "cwd": "${workspaceFolder}" },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
             "windows": {
                 "options": {
-                    "shell": { "executable": "cmd.exe", "args": ["/d", "/c"] }
+                    "shell": {
+                        "executable": "cmd.exe",
+                        "args": [
+                            "/d",
+                            "/c"
+                        ]
+                    }
                 }
             },
             "linux": {
                 "options": {
-                    "shell": { "executable": "/bin/bash", "args": ["-lc"] }
+                    "shell": {
+                        "executable": "/bin/bash",
+                        "args": [
+                            "-lc"
+                        ]
+                    }
                 }
             },
             "presentation": {
@@ -94,7 +133,10 @@
             "presentation": {
                 "reveal": "silent",
                 "panel": "shared"
-            }
+            },
+            "problemMatcher": [
+                "$python"
+            ]
         },
         {
             "label": "Start All Services",
@@ -103,7 +145,10 @@
                 "Cache Warmup",
                 "Services"
             ],
-            "group": { "kind": "build", "isDefault": true },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
             "presentation": {
                 "reveal": "silent",
                 "panel": "shared",
@@ -115,15 +160,28 @@
             "label": "Client",
             "type": "shell",
             "command": "ergoms start-client",
-            "options": { "cwd": "${workspaceFolder}" },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
             "windows": {
                 "options": {
-                    "shell": { "executable": "cmd.exe", "args": ["/d", "/c"] }
+                    "shell": {
+                        "executable": "cmd.exe",
+                        "args": [
+                            "/d",
+                            "/c"
+                        ]
+                    }
                 }
             },
             "linux": {
                 "options": {
-                    "shell": { "executable": "/bin/bash", "args": ["-lc"] }
+                    "shell": {
+                        "executable": "/bin/bash",
+                        "args": [
+                            "-lc"
+                        ]
+                    }
                 }
             },
             "presentation": {
@@ -137,15 +195,28 @@
             "label": "API",
             "type": "shell",
             "command": "ergoms dev",
-            "options": { "cwd": "${workspaceFolder}" },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
             "windows": {
                 "options": {
-                    "shell": { "executable": "cmd.exe", "args": ["/d", "/c"] }
+                    "shell": {
+                        "executable": "cmd.exe",
+                        "args": [
+                            "/d",
+                            "/c"
+                        ]
+                    }
                 }
             },
             "linux": {
                 "options": {
-                    "shell": { "executable": "/bin/bash", "args": ["-lc"] }
+                    "shell": {
+                        "executable": "/bin/bash",
+                        "args": [
+                            "-lc"
+                        ]
+                    }
                 }
             },
             "presentation": {
@@ -159,15 +230,28 @@
             "label": "Media API",
             "type": "shell",
             "command": "ergoms start-media",
-            "options": { "cwd": "${workspaceFolder}" },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
             "windows": {
                 "options": {
-                    "shell": { "executable": "cmd.exe", "args": ["/d", "/c"] }
+                    "shell": {
+                        "executable": "cmd.exe",
+                        "args": [
+                            "/d",
+                            "/c"
+                        ]
+                    }
                 }
             },
             "linux": {
                 "options": {
-                    "shell": { "executable": "/bin/bash", "args": ["-lc"] }
+                    "shell": {
+                        "executable": "/bin/bash",
+                        "args": [
+                            "-lc"
+                        ]
+                    }
                 }
             },
             "presentation": {
@@ -181,15 +265,28 @@
             "label": "Celery Beat",
             "type": "shell",
             "command": "ergoms start-beat",
-            "options": { "cwd": "${workspaceFolder}" },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
             "windows": {
                 "options": {
-                    "shell": { "executable": "cmd.exe", "args": ["/d", "/c"] }
+                    "shell": {
+                        "executable": "cmd.exe",
+                        "args": [
+                            "/d",
+                            "/c"
+                        ]
+                    }
                 }
             },
             "linux": {
                 "options": {
-                    "shell": { "executable": "/bin/bash", "args": ["-lc"] }
+                    "shell": {
+                        "executable": "/bin/bash",
+                        "args": [
+                            "-lc"
+                        ]
+                    }
                 }
             },
             "presentation": {
@@ -203,10 +300,18 @@
             "label": "Ollama",
             "type": "shell",
             "command": "ergoms ollama",
-            "options": { "cwd": "${workspaceFolder}" },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
             "windows": {
                 "options": {
-                    "shell": { "executable": "cmd.exe", "args": ["/d", "/c"] }
+                    "shell": {
+                        "executable": "cmd.exe",
+                        "args": [
+                            "/d",
+                            "/c"
+                        ]
+                    }
                 }
             },
             "presentation": {

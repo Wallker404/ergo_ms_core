@@ -14,7 +14,7 @@
           <button
             v-for="cat in categories"
             :key="cat.key"
-            type="buton" 
+            type="button"
             class="btn btn-sm btn-outline-primary"
             :class="{ active: selectedCategory === cat.key }"
             @click="toggleCategory(cat.key)"
@@ -41,7 +41,13 @@
                 <span>{{ model.name }}</span>
               </div>
             </li>
-            <li v-if="filteredModels.length === 0" class="list-group-item text-muted text-center py-3 small">
+            <li v-if="listLoading" class="list-group-item text-muted text-center py-3 small">
+              Загрузка списка…
+            </li>
+            <li v-else-if="listError" class="list-group-item text-danger text-center py-3 small">
+              {{ listError }}
+            </li>
+            <li v-else-if="filteredModels.length === 0" class="list-group-item text-muted text-center py-3 small">
               Нет доступных моделей
             </li>
           </ul>
@@ -123,9 +129,9 @@
           <!-- Кнопка загрузки -->
           <button
             class="btn btn-success py-2 fw-semibold"
-            :disabled="!canUpload"
+            :disabled="!canUpload || uploading"
             @click="uploadModel">
-            Загрузить модель
+            {{ uploading ? 'Отправка…' : 'Загрузить модель' }}
           </button>
         </div>
       </div>
@@ -227,7 +233,7 @@
           </div>
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
-            <button type="button" class="btn btn-danger" data-bs-dismiss="modal" @click="confirmDelete">Удалить</button>
+            <button type="button" class="btn btn-danger" @click="confirmDelete">Удалить</button>
           </div>
         </div>
       </div>
@@ -258,60 +264,17 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { Modal } from 'bootstrap'
-// ======================== ЗАГЛУШКА ДАННЫХ ========================
+import { apiClient } from '@/js/api/manager'
+import { roomAnalyticsEndpoints } from '../js/endpoints'
+
 const categories = [
   { key: 'detection', label: 'Детекция комнат и стен' },
   { key: 'classification', label: 'Классификация комнат' },
-  { key: 'furniture', label: 'Детекция и классификация мебели' }
+  { key: 'furniture', label: 'Детекция и классификация мебели' },
 ]
 
-
-const modelsStub = [
-  {
-    id: 1,
-    name: 'RoomDetect_v1.onnx',
-    category: 'detection',
-    installDate: '2026-01-15',
-    status: 'active',
-    classes: ['living_room', 'bedroom', 'kitchen', 'bathroom', 'hallway', 'wall']
-  },
-  {
-    id: 2,
-    name: 'WallDetector_v2.onnx',
-    category: 'detection',
-    installDate: '2026-03-22',
-    status: 'inactive',
-    classes: ['load_bearing_wall', 'partition_wall', 'exterior_wall']
-  },
-  {
-    id: 3,
-    name: 'RoomClassify_ResNet50.onnx',
-    category: 'classification',
-    installDate: '2025-11-08',
-    status: 'active',
-    classes: ['office', 'conference_room', 'lobby', 'storage', 'restroom']
-  },
-  {
-    id: 4,
-    name: 'FurnitureDetect_YOLOv8.onnx',
-    category: 'furniture',
-    installDate: '2026-04-10',
-    status: 'active',
-    classes: ['sofa', 'table', 'chair', 'bed', 'desk', 'shelf', 'cabinet', 'lamp']
-  },
-  {
-    id: 5,
-    name: 'FurnitureClassify_v3.onnx',
-    category: 'furniture',
-    installDate: '2025-09-30',
-    status: 'inactive',
-    classes: ['armchair', 'dining_table', 'wardrobe', 'nightstand', 'bookshelf']
-  }
-]
-
-// ======================== СОСТОЯНИЕ ========================
 const selectedCategory = ref(null)
 const selectedModel = ref(null)
 const selectedCategoryToSave = ref(null)
@@ -321,38 +284,94 @@ const labelFile = ref(null)
 const onnxInput = ref(null)
 const labelInput = ref(null)
 
-// ======================== ВЫЧИСЛЯЕМЫЕ ========================
-const filteredModels = computed(() => {
-  if (!selectedCategory.value) return []
-  return modelsStub.filter(m => m.category === selectedCategory.value)
-})
+const categoryModels = ref([])
+const listLoading = ref(false)
+const listError = ref('')
+const uploading = ref(false)
+
+const filteredModels = computed(() => categoryModels.value)
 
 const canUpload = computed(() => {
   return selectedCategoryToSave.value && onnxFile.value && labelFile.value
 })
 
-// ======================== МЕТОДЫ ========================
+function normalizeApiModel(m) {
+  const raw = m.install_date ?? m.installDate
+  let installDate = ''
+  if (raw) {
+    try {
+      installDate = new Date(raw).toLocaleDateString('ru-RU')
+    } catch {
+      installDate = String(raw).slice(0, 10)
+    }
+  }
+  return {
+    id: m.id,
+    name: m.name,
+    category: m.category,
+    installDate,
+    status: m.is_active ? 'active' : 'inactive',
+    classes: Array.isArray(m.classes) ? m.classes : [],
+    onnx_file: m.onnx_file,
+  }
+}
+
+function apiErrorMessage(err) {
+  return (
+    err.response?.data?.error ||
+    err.response?.data?.message ||
+    err.response?.data?.detail ||
+    err.message ||
+    'Ошибка запроса'
+  )
+}
+
+async function loadModelsForCategory(category) {
+  if (!category) {
+    categoryModels.value = []
+    listError.value = ''
+    return
+  }
+  listLoading.value = true
+  listError.value = ''
+  try {
+    const res = await apiClient.get(roomAnalyticsEndpoints.roomAnalytics.modelList, { category })
+    if (!res.success) throw new Error(res.message || 'Не удалось загрузить список')
+    const payload = res.data || {}
+    const models = payload.models || []
+    categoryModels.value = models.map(normalizeApiModel)
+  } catch (e) {
+    listError.value = apiErrorMessage(e)
+    categoryModels.value = []
+  } finally {
+    listLoading.value = false
+  }
+}
+
+watch(selectedCategory, (cat) => {
+  selectedModel.value = null
+  loadModelsForCategory(cat)
+})
+
 const getCategoryLabel = (key) => {
-  const cat = categories.find(c => c.key === key)
+  const cat = categories.find((c) => c.key === key)
   return cat ? cat.label : key
 }
 
 const toggleCategory = (key) => {
-  // Переключаем категорию в меню
   if (selectedCategory.value === key) {
-    selectedCategory.value = null 
-  } 
-  else {
-    selectedCategory.value = key 
+    selectedCategory.value = null
+  } else {
+    selectedCategory.value = key
   }
-  selectedModel.value = null  
+  selectedModel.value = null
 }
 
-const togglecategoryload=(key)=>{
+const togglecategoryload = (key) => {
   if (selectedCategoryToSave.value === key) {
-    selectedCategoryToSave.value = null 
+    selectedCategoryToSave.value = null
   } else {
-    selectedCategoryToSave.value = key 
+    selectedCategoryToSave.value = key
   }
 }
 
@@ -371,7 +390,6 @@ const handleLabelFile = (e) => {
   const file = e.target.files[0]
   if (file && (file.name.endsWith('.txt') || file.name.endsWith('.json'))) {
     labelFile.value = file
-    console.log(labelFile.value)
   }
 }
 
@@ -385,37 +403,58 @@ const clearLabel = () => {
   if (labelInput.value) labelInput.value.value = ''
 }
 
-const uploadModel = () => {
-  // Заглушка API запроса
-  console.log('[API] POST /api/models/upload', {
-    directory: selectedCategoryToSave.value,
-    onnxFile: onnxFile.value.name,
-    labelFile: labelFile.value.name
-  })
-
-
+const uploadModel = async () => {
+  if (!canUpload.value || uploading.value) return
   const modalEl = document.getElementById('uploadModal')
+  let modal = null
   if (modalEl) {
-    const modal = new Modal(modalEl)
+    modal = Modal.getOrCreateInstance(modalEl)
     modal.show()
-
-  setTimeout(() => {
-    modal.hide()
-    alert('Модель успешно загружена! (заглушка)')
+  }
+  uploading.value = true
+  const savedCategory = selectedCategoryToSave.value
+  try {
+    const fd = new FormData()
+    fd.append('category', savedCategory)
+    fd.append('onnx_file', onnxFile.value)
+    fd.append('classes', labelFile.value)
+    const res = await apiClient.post(roomAnalyticsEndpoints.roomAnalytics.modelUpload, fd)
+    if (!res.success) throw new Error(res.message || 'Ошибка загрузки')
+    modal?.hide()
     clearOnnx()
     clearLabel()
     selectedCategoryToSave.value = null
-  }, 2000)
+    if (selectedCategory.value === savedCategory) {
+      await loadModelsForCategory(savedCategory)
+    }
+    alert('Модель успешно загружена')
+  } catch (e) {
+    modal?.hide()
+    alert(apiErrorMessage(e))
+  } finally {
+    uploading.value = false
+  }
 }
-}
 
-
-
-const toggleModelStatus = () => {
+const toggleModelStatus = async () => {
   if (!selectedModel.value) return
-  selectedModel.value.status = selectedModel.value.status === 'active' ? 'inactive' : 'active'
-  // Заглушка API
-  console.log('[API] POST /api/models/' + selectedModel.value.id + '/toggle-status')
+  const id = selectedModel.value.id
+  try {
+    const res = await apiClient.post(roomAnalyticsEndpoints.roomAnalytics.modelToggle(id))
+    if (!res.success) throw new Error(res.message || 'Ошибка')
+    const active = res.data?.is_active
+    if (typeof active === 'boolean') {
+      selectedModel.value = {
+        ...selectedModel.value,
+        status: active ? 'active' : 'inactive',
+      }
+    }
+    await loadModelsForCategory(selectedCategory.value)
+    const updated = categoryModels.value.find((m) => m.id === id)
+    if (updated) selectedModel.value = updated
+  } catch (e) {
+    alert(apiErrorMessage(e))
+  }
 }
 
 const deleteModel = () => {
@@ -426,27 +465,19 @@ const deleteModel = () => {
   }
 }
 
-const confirmDelete = () => {
+const confirmDelete = async () => {
   if (!selectedModel.value) return
-  console.log('[API] DELETE /api/models/' + selectedModel.value.id)
-
   const id = selectedModel.value.id
-  modelsStub.splice(modelsStub.findIndex(m => m.id === id), 1)
-  selectedModel.value = null
-
-  alert('Модель удалена! (заглушка)')
-  
-  // Закрываем модалку после удаления
-  const modalEl = document.getElementById('deleteModal')
-  if (modalEl) {
-    const modal = Modal.getInstance(modalEl)
-    modal?.hide()
+  try {
+    await apiClient.delete(roomAnalyticsEndpoints.roomAnalytics.modelDetail(id))
+    selectedModel.value = null
+    await loadModelsForCategory(selectedCategory.value)
+    const modalEl = document.getElementById('deleteModal')
+    const inst = Modal.getInstance(modalEl)
+    inst?.hide()
+  } catch (e) {
+    alert(apiErrorMessage(e))
   }
 }
-
-onMounted(() => {
-  // Инициализация Bootstrap JS если нужно
-  console.log('ModelsManager mounted')
-})
 </script>
 

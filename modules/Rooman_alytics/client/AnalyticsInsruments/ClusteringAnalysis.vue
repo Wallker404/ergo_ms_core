@@ -5,33 +5,32 @@
     <!-- Шаг 1: Загрузка и параметры -->
     <div v-if="step === 'upload'" class="card p-4">
       <div class="mb-3">
-  <label class="form-label">Загрузите файл (.csv или .json)</label>
-  
-  <input
-    type="file"
-    ref="fileInput"
-    @change="onFileChange"
-    accept=".csv,.json"
-    hidden
-  />
-  
-  <button class="btn btn-primary w-100" @click="triggerUpload" type="button">
-    {{ fileName ? 'Выбранный файл' + fileName : 'Выбрать файл' }}
-  </button>
-  
-  <div v-if="fileError" class="text-danger small mt-1">{{ fileError }}</div>
-  <div v-if="fileName" class="form-text">
-    Файл выбран. Нажмите "Анализировать" для начала обработки.
-  </div>
-</div>
+        <label class="form-label">Загрузите файл (.csv или .json)</label>
+        
+        <input
+          type="file"
+          ref="fileInput"
+          @change="onFileChange"
+          accept=".csv,.json"
+          hidden
+        />
+        
+        <button class="btn btn-primary w-100" @click="triggerUpload" type="button">
+          {{ fileName ? 'Выбранный файл: ' + fileName : 'Выбрать файл' }}
+        </button>
+        
+        <div v-if="fileError" class="text-danger small mt-1">{{ fileError }}</div>
+        <div v-if="fileName" class="form-text">
+          Файл выбран. Нажмите "Анализировать" для начала обработки.
+        </div>
+      </div>
 
       <div class="mb-3">
         <label class="form-label">Алгоритм</label>
         <select v-model="algorithm" class="form-select">
-          <option value = 'pre_analyse'>Получить графики методов локтя и силуэта</option>
+          <option value="pre_analyse">Получить графики методов локтя и силуэта</option>
           <option value="kmeans">K-Means</option>
           <option value="dbscan">DBSCAN</option>
-           
         </select>
       </div>
 
@@ -59,6 +58,7 @@
       <div v-if="error" class="alert alert-danger mt-3 mb-0">{{ error }}</div>
     </div>
 
+    <!-- Шаг 2: Pre-analysis -->
     <div v-else-if="step === 'pre_analysis'" class="card p-4">
       <h4 class="mb-3">Выбор оптимального k</h4>
       <div class="row g-4 mb-4">
@@ -77,45 +77,122 @@
       </div>
     </div>
 
-    <!-- Шаг 3: Результат кластеризации -->
+    <!-- Шаг 3: Результат кластеризации (ОБНОВЛЕНО) -->
     <div v-else-if="step === 'results'" class="card p-4">
-  <h4 class="mb-3">Результат: {{ resultInfo }}</h4>
+      <h4 class="mb-3">Результат: {{ resultInfo }}</h4>
 
-  <div class="row g-3 mb-3">
-    <div class="col-md-6">
-      <label class="form-label">Ось X</label>
-      <select v-model="selectedXIdx" @change="updatePlot" class="form-select">
-        <option v-for="(f, i) in features" :key="i" :value="i">{{ f }}</option>
-      </select>
-    </div>
-    <div class="col-md-6">
-      <label class="form-label">Ось Y</label>
-      <select v-model="selectedYIdx" @change="updatePlot" class="form-select">
-        <option v-for="(f, i) in features" :key="i" :value="i">{{ f }}</option>
-      </select>
-    </div>
+      <div class="row g-3 mb-3">
+        <div class="col-md-6">
+          <label class="form-label">Ось X</label>
+          <select v-model="selectedXIdx" @change="updatePlot" class="form-select">
+            <option v-for="(f, i) in features" :key="i" :value="i">{{ f }}</option>
+          </select>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label">Ось Y</label>
+          <select v-model="selectedYIdx" @change="updatePlot" class="form-select">
+            <option v-for="(f, i) in features" :key="i" :value="i">{{ f }}</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Chart.js вместо картинки -->
+      <div class="bg-light rounded p-2" style="position: relative; height: 500px;">
+        <canvas ref="clusterChart"></canvas>
+      </div>
+
+      <!-- Легенда для переключения кластеров -->
+      <div v-if="clusterDatasets?.length" class="d-flex flex-wrap gap-2 mt-3">
+        <div 
+          v-for="(ds, i) in clusterDatasets" 
+          :key="i"
+          class="d-inline-flex align-items-center small"
+          @click="toggleDataset(i)"
+          style="cursor: pointer; padding: 4px 8px; border-radius: 4px;"
+          :class="{'text-decoration-line-through opacity-50': ds.hidden}"
+        >
+          <span 
+            class="rounded me-1 border"
+            style="width: 14px; height: 14px; display: inline-block;"
+            :style="{ backgroundColor: ds.backgroundColor }"
+          ></span>
+          {{ ds.label }}
+        </div>
+      </div>
+
+<!-- Статистика по кластерам (карточки) -->
+<div v-if="clusterStats" class="mt-4">
+  <h6 class="mb-3">Характеристики кластеров</h6>
+
+  <!-- Переключатели кластеров -->
+  <div class="d-flex flex-wrap gap-2 mb-3">
+    <button
+      v-for="(stats, key) in clusterStats"
+      :key="key"
+      class="btn btn-sm d-flex align-items-center gap-1 px-3 py-2"
+      :class="selectedCluster === key ? 'btn-primary shadow-sm' : 'btn-outline-secondary'"
+      @click="selectedCluster = key"
+    >
+      <span>{{ key === 'noise' ? 'Шум' : `Кластер ${key.split('_')[1]}` }}</span>
+      <span class="badge" :class="selectedCluster === key ? 'text-bg-light' : 'bg-secondary bg-opacity-75'">
+        {{ stats.size }}
+      </span>
+    </button>
   </div>
 
-  <div class="text-center bg-light rounded p-2">
-    <img v-if="plotImage" :src="plotImage" class="img-fluid" alt="График" style="max-height: 600px;" />
-    <div v-else class="text-muted p-4">Генерация графика...</div>
-  </div>
-
-  <div class="mt-3">
-    <button @click="reset" class="btn btn-outline-primary">Новый анализ</button>
+  <!-- Карточка с таблицей -->
+  <div v-if="currentStats" class="card border shadow-sm">
+    <div class="card-header bg-light py-2 d-flex justify-content-between align-items-center">
+      <span class="fw-bold">{{ currentClusterLabel }}</span>
+      <span class="badge bg-light text-primary border border-primary rounded-pill">
+        {{ currentStats.size }} наблюдений
+      </span>
+    </div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead>
+            <tr class="bg-light">
+              <th scope="col" class="ps-3">Параметр</th>
+              <th scope="col" class="text-center">Среднее</th>
+              <th scope="col" class="text-center">Минимум</th>
+              <th scope="col" class="text-center pe-3">Максимум</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="feat in features" :key="feat">
+              <td class="ps-3 fw-medium">{{ feat }}</td>
+              <td class="text-center fw-semibold">{{ formatNum(currentStats.features[feat]?.mean) }}</td>
+              <td class="text-center text-success">{{ formatNum(currentStats.features[feat]?.min) }}</td>
+              <td class="text-center text-danger pe-3">{{ formatNum(currentStats.features[feat]?.max) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   </div>
 </div>
+
+
+      <div class="mt-3">
+        <button @click="reset" class="btn btn-outline-primary">Новый анализ</button>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref,watch, onBeforeUnmount } from 'vue'
+
+//#region Импорты
+import { ref, watch, onBeforeUnmount, nextTick, computed } from 'vue'
 import { Chart, registerables } from 'chart.js'
 import { apiClient } from '../../../../core/client/src/js/api/manager'
 import { roomAnalyticsEndpoints } from '../js/endpoints'
-
 Chart.register(...registerables)
-// надстройки сайта
+//#endregion
+
+//#region Vue параметры
+// Состояние
 const loading = ref(false)
 const error = ref('')
 const algorithm = ref('kmeans')
@@ -124,7 +201,7 @@ const fileInput = ref(null)
 const fileName = ref('')
 const fileError = ref('')
 
-// передаваемые параметры
+// Параметры
 const file = ref(null)
 const k = ref(3)
 const eps = ref(0.5)
@@ -136,18 +213,25 @@ const silhouetteChart = ref(null)
 const clusterChart = ref(null)
 let chartInstances = {}
 
-//Работа с кластеризацией
+// Данные кластеризации
 const features = ref([])
 const selectedXIdx = ref(0)
 const selectedYIdx = ref(1)
-const plotImage = ref('')
-const clusterData = ref([])
-const centroidsData = ref([])
 const resultInfo = ref('')
-const selectedX = ref('')
-const selectedY = ref('')
+const clusterDatasets = ref([]) // для легенды
+const clusterStats = ref(null)
 
-//подготовка данных
+
+const formatNum = (val) => {
+  if (val === undefined || val === null) return '—'
+  const num = Number(val)
+  return (Math.abs(num) >= 100000 || Math.abs(num) < 0.01) &&Math.abs(num)!=0
+    ? num.toExponential(2) 
+    : num.toFixed(2)
+}
+//#endregion
+
+//#region Загрузка данных
 const buildFormData = (params) => {
   const fd = new FormData()
   fd.append('file', file.value)
@@ -157,10 +241,8 @@ const buildFormData = (params) => {
   return fd
 }
 
-//вызов загрузки файла при нажатии на кнопку
 const triggerUpload = () => fileInput.value?.click()
 
-// изменение параметров при загрузке файла
 const onFileChange = (e) => {
   const selected = e.target.files?.[0]
   if (!selected) {
@@ -168,7 +250,6 @@ const onFileChange = (e) => {
     file.value = null
     return
   }
-
   const ext = selected.name.split('.').pop().toLowerCase()
   if (!['csv', 'json'].includes(ext)) {
     fileError.value = 'Поддерживаются только .csv и .json'
@@ -181,14 +262,14 @@ const onFileChange = (e) => {
   file.value = selected
   fileError.value = ''
 }
+//#endregion
 
-//запуск анализа
+//#region Запросы api для запуска кластеризации
 const submitAnalysis = async () => {
   loading.value = true
   error.value = ''
   
   try {
-    //вывод графиков до kmeans
     if (algorithm.value === 'pre_analyse') {
       const [elbowRes, silRes] = await Promise.all([
         apiClient.post(
@@ -203,38 +284,30 @@ const submitAnalysis = async () => {
       if (!elbowRes.success || !silRes.success) {
         throw new Error(elbowRes.message || silRes.message || 'Ошибка предварительного анализа')
       }
-      
       step.value = 'pre_analysis'
-      renderElbowChart(elbowRes.data)   // <-- res.data уже содержит ответ от Django
+      await nextTick()
+      renderElbowChart(elbowRes.data)
       renderSilhouetteChart(silRes.data)
       
-    } 
-    // отработка по k-means
-    else if (algorithm.value === 'kmeans') {
+    } else if (algorithm.value === 'kmeans') {
       if (!k.value || k.value < 2) {
         error.value = 'k должно быть >= 2'
         return
       }
-      console.log(buildFormData({ k: k.value }))
       const res = await apiClient.post(
         roomAnalyticsEndpoints.roomAnalytics.kmeans,
         buildFormData({ k: k.value })
       )
       if (!res.success) throw new Error(res.message || 'Ошибка кластеризации')
-      console.log(res.data)
       handleClusteringResult(res.data)
       
-    } 
-    //вызов dbscan
-    else if (algorithm.value === 'dbscan') {
+    } else if (algorithm.value === 'dbscan') {
       const res = await apiClient.post(
         roomAnalyticsEndpoints.roomAnalytics.dbscan,
         buildFormData({ eps: eps.value, min_samples: minSamples.value })
       )
       if (!res.success) throw new Error(res.message || 'Ошибка кластеризации')
-      console.log(res.data)
       handleClusteringResult(res.data)
-    
     }
   } catch (e) {
     error.value = e.message || 'Ошибка сети'
@@ -253,7 +326,6 @@ const runFinalClustering = async () => {
       buildFormData({ k: k.value })
     )
     if (!res.success) throw new Error(res.message || 'Ошибка кластеризации')
-    console.log(res.data)
     handleClusteringResult(res.data)
   } catch (e) {
     error.value = e.message || 'Ошибка сети'
@@ -261,23 +333,44 @@ const runFinalClustering = async () => {
     loading.value = false
   }
 }
+//#endregion
 
+//#region ChartJs методы
 const handleClusteringResult = (data) => {
   step.value = 'results'
   resultInfo.value = `${data.algorithm?.toUpperCase() || 'CLUSTERING'} | Кластеров: ${data.n_clusters}${data.n_noise ? ` | Шума: ${data.n_noise}` : ''}`
   features.value = data.features || []
-  plotImage.value = data.plot || ''
+  
+  if (data.chart_data?.datasets) {
+    clusterDatasets.value = data.chart_data.datasets.map(ds => ({
+      ...ds,
+      hidden: false
+    }))
+  }
+  
+  clusterStats.value = data.cluster_stats || null
+
   if (features.value.length >= 2) {
     selectedXIdx.value = 0
     selectedYIdx.value = 1
   }
+  
+  nextTick(() => {
+    renderClusterChart(data.chart_data)
+  })
 }
+
+// 🔹 ОБНОВЛЕНО: перерисовка с новыми осями
 const updatePlot = async () => {
   if (loading.value || !file.value || features.value.length < 2) return
   loading.value = true
   try {
-    const endpoint = algorithm.value === 'kmeans' ? roomAnalyticsEndpoints.roomAnalytics.kmeans : roomAnalyticsEndpoints.roomAnalytics.dbscan
-    const payload = algorithm.value === 'kmeans' ? { k: k.value } : { eps: eps.value, min_samples: minSamples.value }
+    const endpoint = algorithm.value === 'kmeans' 
+      ? roomAnalyticsEndpoints.roomAnalytics.kmeans 
+      : roomAnalyticsEndpoints.roomAnalytics.dbscan
+    const payload = algorithm.value === 'kmeans' 
+      ? { k: k.value } 
+      : { eps: eps.value, min_samples: minSamples.value }
     
     const fd = new FormData()
     fd.append('file', file.value)
@@ -287,7 +380,16 @@ const updatePlot = async () => {
 
     const res = await apiClient.post(endpoint, fd)
     if (!res.success) throw new Error(res.message || 'Ошибка сервера')
-    plotImage.value = res.data.plot || ''
+    
+    // Обновляем данные и перерисовываем
+    if (res.data.chart_data?.datasets) {
+      clusterDatasets.value = res.data.chart_data.datasets.map(ds => ({
+        ...ds,
+        hidden: false
+      }))
+      clusterStats.value = res.data.cluster_stats || null 
+      renderClusterChart(res.data.chart_data)
+    }
   } catch (e) {
     error.value = e.message || 'Ошибка сети'
   } finally {
@@ -295,231 +397,124 @@ const updatePlot = async () => {
   }
 }
 
-watch([selectedX, selectedY], () => {
-  if (step.value === 'results') renderClusterChart()
-})
-
-
-
-
-const renderClusterChart = () => {
-  destroyChart('cluster')
+// 🔹 НОВАЯ: отрисовка через Chart.js
+const renderClusterChart = (chartData) => {
+  if (!clusterChart.value || !chartData?.datasets) return
   
-  const xKey = selectedX.value
-  const yKey = selectedY.value
-  if (!xKey || !yKey || !clusterData.value.length) return
-
-  // 🔹 1. Собираем все числовые значения для расчёта границ
-  const allX = clusterData.value.map(p => p[xKey]).filter(v => typeof v === 'number' && isFinite(v))
-  const allY = clusterData.value.map(p => p[yKey]).filter(v => typeof v === 'number' && isFinite(v))
-  
-  if (!allX.length || !allY.length) return
-
-  const xMin = Math.min(...allX), xMax = Math.max(...allX)
-  const yMin = Math.min(...allY), yMax = Math.max(...allY)
-  
-  // 🔹 2. Нормализуем координаты в диапазон [0, 100] для визуального баланса
-  // Это НЕ меняет данные, только координаты для отрисовки
-  const normalize = (val, min, max) => {
-    if (max === min) return 50 // если все значения одинаковые — центр
-    return ((val - min) / (max - min)) * 100
+  // Уничтожаем старый
+  if (chartInstances.cluster) {
+    chartInstances.cluster.destroy()
   }
-
-  const uniqueLabels = [...new Set(clusterData.value.map(p => p.label))]
-  const colors = ['#dc3545', '#0d6efd', '#198754', '#ffc107', '#6f42c1', '#d63384', '#0dcaf0', '#6610f2']
   
-  const datasets = uniqueLabels.map((lbl, i) => ({
-    label: lbl === -1 ? 'Noise' : `Cluster ${lbl}`,
-    // 🔹 Нормализуем x/y для отрисовки, но сохраняем оригиналы в скрытых полях
-    data: clusterData.value
-      .filter(p => p.label === lbl)
-      .map(p => ({
-        x: normalize(p[xKey], xMin, xMax),
-        y: normalize(p[yKey], yMin, yMax),
-        _realX: p[xKey],  // 🔹 сохраняем реальное значение для тултипа
-        _realY: p[yKey]
-      })),
-    backgroundColor: lbl === -1 ? '#6c757d' : colors[i % colors.length],
-    pointRadius: 4,
-    pointHoverRadius: 6
+  const ctx = clusterChart.value.getContext('2d')
+  
+  // Подготовка датасетов с учетом hidden-состояния
+  const datasets = clusterDatasets.value.map(ds => ({
+    ...ds,
+    hidden: ds.hidden,
+    // Убеждаемся в формате цвета
+    backgroundColor: ds.backgroundColor.includes('rgba') 
+      ? ds.backgroundColor 
+      : ds.backgroundColor.replace('rgb', 'rgba').replace(')', ', 0.7)'),
   }))
-
-  if (centroidsData.value.length) {
-    datasets.push({
-      label: 'Centroids',
-      data: centroidsData.value.map(p => ({
-        x: normalize(p[xKey], xMin, xMax),
-        y: normalize(p[yKey], yMin, yMax),
-        _realX: p[xKey],
-        _realY: p[yKey]
-      })),
-      backgroundColor: '#000',
-      pointStyle: 'crossRot',
-      pointRadius: 12,
-      pointHoverRadius: 14
-    })
-  }
-
-  const canvas = clusterChart.value
-  if (!canvas) return
-
-  chartInstances.cluster = new Chart(canvas, {
+  
+  chartInstances.cluster = new Chart(ctx, {
     type: 'scatter',
-    data:{ datasets },
+    data: { datasets },
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      aspectRatio: 1,  // 🔹 Квадратный график — точки не сплющиваются
-      animation: { duration: 0 },
+      animation: false,
       plugins: {
-        legend: { position: 'right', labels: { usePointStyle: true } },
+        legend: { display: false },
         tooltip: {
           callbacks: {
-            // 🔹 Показываем РЕАЛЬНЫЕ значения в тултипе, а не нормализованные
             label: (ctx) => {
               const raw = ctx.raw
-              const label = ctx.dataset.label || ''
-              const realX = raw._realX ?? raw.x
-              const realY = raw._realY ?? raw.y
-              return `${label}: ${xKey}=${Number(realX).toLocaleString()}, ${yKey}=${Number(realY).toLocaleString()}`
-            },
-            // 🔹 Заголовок тултипа (опционально)
-            title: () => `Точка данных`
+              return `${ctx.dataset.label}: ${chartData.xAxisLabel}=${raw.x?.toFixed(3)}, ${chartData.yAxisLabel}=${raw.y?.toFixed(3)}`
+            }
           }
         }
       },
       scales: {
         x: {
-          title: { display: true, text: xKey, font: { weight: 'bold' } },
-          min: 0, max: 100,  // 🔹 Фиксированный диапазон после нормализации
-          ticks: {
-            // 🔹 Подписи осей: показываем реальные значения, а не 0-100
-            callback: (value) => {
-              // Обратное преобразование: из [0,100] в реальный диапазон
-              const realVal = xMin + (value / 100) * (xMax - xMin)
-              return Number(realVal).toLocaleString(undefined, { maximumFractionDigits: 1 })
-            },
-            maxTicksLimit: 6
-          },
-          grid: { color: 'rgba(0,0,0,0.05)' }
+          title: { display: true, text: chartData.xAxisLabel },
+          type: 'linear',
+          position: 'bottom',
+          grid: { color: 'rgba(0,0,0,0.1)' }
         },
         y: {
-          title: { display: true, text: yKey, font: { weight: 'bold' } },
-          min: 0, max: 100,
-          ticks: {
-            callback: (value) => {
-              const realVal = yMin + (value / 100) * (yMax - yMin)
-              return Number(realVal).toLocaleString(undefined, { maximumFractionDigits: 1 })
-            },
-            maxTicksLimit: 6
-          },
-          grid: { color: 'rgba(0,0,0,0.05)' }
+          title: { display: true, text: chartData.yAxisLabel },
+          grid: { color: 'rgba(0,0,0,0.1)' }
         }
       }
     }
   })
 }
 
-// ── Charts ─────────────────────────────────────────────
+// Переключение видимости датасета
+const toggleDataset = (index) => {
+  if (!chartInstances.cluster) return
+  clusterDatasets.value[index].hidden = !clusterDatasets.value[index].hidden
+  const meta = chartInstances.cluster.getDatasetMeta(index)
+  meta.hidden = clusterDatasets.value[index].hidden
+  chartInstances.cluster.update()
+}
+
+
 const destroyChart = (name) => {
   if (chartInstances[name]) {
     chartInstances[name].destroy()
     delete chartInstances[name]
   }
 }
+//#endregion
 
-
-
-
-
-
-
-
-
-
+//#region Методы для отрисовки метода локтя и метода силуэтов
 const renderElbowChart = async (data) => {
   destroyChart('elbow')
-  await new Promise(resolve => {
-    const check = () => {
-      if (elbowChart.value && elbowChart.value.getContext) {
-        resolve()
-      } else {
-        setTimeout(check, 50)
+  await nextTick()
+  const canvas = elbowChart.value
+  if (!canvas?.getContext) return
+
+  chartInstances.elbow = new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels: data.k_values,
+      datasets: [{
+        label: 'Inertia',
+        data: data.inertia,
+        borderColor: '#0d6efd',
+        backgroundColor: 'rgba(13,110,253,0.1)',
+        tension: 0.3,
+        fill: true
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { title: { display: true, text: 'Метод локтя' } },
+      scales: {
+        x: { title: { display: true, text: 'k' } },
+        y: { title: { display: true, text: 'Inertia' }, beginAtZero: true }
       }
     }
-    check()
   })
-  const canvas = elbowChart.value
-  if (!canvas) {
-    return
-  }
-  if (typeof canvas.getContext !== 'function') {
-    return
-  }
-
-  try {
-    chartInstances.elbow = new Chart(canvas, {
-      type: 'line',
-      data: {
-        labels: data.k_values,
-        datasets: [{
-          label: 'Inertia',
-          data: data.inertia,
-          borderColor: '#0d6efd',
-          backgroundColor: 'rgba(13,110,253,0.1)',
-          tension: 0.3,
-          fill: true
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: { title: { display: true, text: 'Метод локтя' } },
-        scales: {
-          x: { title: { display: true, text: 'k' } },
-          y: { title: { display: true, text: 'Inertia' }, beginAtZero: true }
-        }
-      }
-    })
-  } catch (e) {
-    console.error('Chart.js error:', e)
-  }
 }
-
-
-
-
 
 const renderSilhouetteChart = async (data) => {
   destroyChart('silhouette')
-
-  // Ждём, пока канвас будет готов
-  await new Promise(resolve => {
-    const check = () => {
-      if (silhouetteChart.value && typeof silhouetteChart.value.getContext === 'function') {
-        resolve()
-      } else {
-        setTimeout(check, 50)
-      }
-    }
-    check()
-  })
-  
+  await nextTick()
   const canvas = silhouetteChart.value
-  if (!canvas) {
-    return
-  }
-  if (typeof canvas.getContext !== 'function') {
-    return
-  }
+  if (!canvas?.getContext) return
 
   chartInstances.silhouette = new Chart(canvas, {
     type: 'bar',
-    data: {  // 🔹 КЛЮЧ "data:" ДОБАВЛЕН
+    data: {
       labels: data.k_values,
       datasets: [{
         label: 'Silhouette Score',
-        data: data.silhouette,  // 🔹 КЛЮЧ "data:" ДОБАВЛЕН
+        data: data.silhouette,
         backgroundColor: '#198754'
       }]
     },
@@ -531,38 +526,47 @@ const renderSilhouetteChart = async (data) => {
         legend: { display: true, position: 'top' }
       },
       scales: {
-        y: { 
-          min: -1, 
-          max: 1, 
-          title: { display: true, text: 'Score' },
-          beginAtZero: false
-        },
-        x: { 
-          title: { display: true, text: 'k' } 
-        }
+        y: { min: -1, max: 1, title: { display: true, text: 'Score' } },
+        x: { title: { display: true, text: 'k' } }
       }
     }
   })
-  
-  console.log('✅ Silhouette chart created')
 }
+//#endregion
 
-
-// ── Reset ──────────────────────────────────────────────
+//#region Методы по очистке данных
 const reset = () => {
   step.value = 'upload'
   file.value = null
   fileName.value = ''
   error.value = ''
-  preAnalysis.value = false
   features.value = []
-  clusterData.value = []
-  centroidsData.value = []
-  selectedX.value = ''
-  selectedY.value = ''
-  Object.keys(chartInstances).forEach(destroyChart)
+  clusterDatasets.value = []
+  selectedXIdx.value = 0
+  selectedYIdx.value = 1
+  clusterStats.value = null
+  selectedCluster.value = null
+  Object.keys(chartInstances).forEach(key => destroyChart(key))
   if (fileInput.value) fileInput.value.value = ''
 }
 
-onBeforeUnmount(() => Object.keys(chartInstances).forEach(destroyChart))
+onBeforeUnmount(() => Object.keys(chartInstances).forEach(key => destroyChart(key)))
+//#endregion
+
+const selectedCluster = ref(null)
+
+// Автоматически выбираем первый кластер при загрузке данных
+watch(clusterStats, (newStats) => {
+  if (newStats && Object.keys(newStats).length > 0) {
+    selectedCluster.value = Object.keys(newStats)[0]
+  }
+}, { immediate: true })
+
+// Вычисляемые свойства для текущей карточки
+const currentStats = computed(() => clusterStats.value?.[selectedCluster.value] || null)
+const currentClusterLabel = computed(() => {
+  if (!selectedCluster.value) return ''
+  return selectedCluster.value === 'noise' ? 'Шумовые точки' : `Кластер ${selectedCluster.value.split('_')[1]}`
+})
+
 </script>

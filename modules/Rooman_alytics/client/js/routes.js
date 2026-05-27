@@ -78,5 +78,33 @@ export default {
       "title": "Байсовый анализ",
       "requiresAuth": true
     }
+  },
+  "FunctionsAndFormPage":{
+    "name":"FunctionsAnsFormsPage",
+    "path": "/room-analytics/formandfunctions/:criterionId",
+    "component":"@/modules/Rooman_alytics/client/AnalyticsInsruments/FunctionsAndFormPage.vue",
+    "meta":{
+      "title":"Функции и анкета",
+      "requiresAuth": true
+    }
+
+  },
+"FormCustomPage": {
+  "name": "FormCustomPage",
+  "path": "/room-analytics/formcustom/:criterionId",
+  "component": "@/modules/Rooman_alytics/client/AnalyticsInsruments/FormCustomPage.vue",
+  "meta": {
+    "title": "Настройка анкеты",
+    "requiresAuth": true
   }
+},
+"FormulaCustomPage": {
+  "name": "FormulaCustomPage",
+  "path": "/room-analytics/formulacustom/:criterionId",
+  "component": "@/modules/Rooman_alytics/client/AnalyticsInsruments/Formularedact.vue",
+  "meta": {
+    "title": "Настройка анкеты",
+    "requiresAuth": true
+  }
+}
 }
