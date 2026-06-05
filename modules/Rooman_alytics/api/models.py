@@ -1,7 +1,3 @@
-from email.policy import default
-from pyexpat import model
-from random import choices
-from tkinter import CASCADE
 from django.db import models
 from django.core.validators import FileExtensionValidator 
 
@@ -84,6 +80,9 @@ class Criterion_of_ergonomy(models.Model):
     bad_mark_border = models.FloatField(default=5)
     normal_mark_border = models.FloatField(default=7)
     good_mark_border = models.FloatField(default=9)
+    var_name = models.CharField(max_length=15, default='')
+    is_counting_by_system_equastion = models.BooleanField(default=False) 
+
 
 class Form_question(models.Model):
     criterion_id= models.ForeignKey(Criterion_of_ergonomy, on_delete=models.CASCADE)
@@ -166,6 +165,7 @@ class FormulaParam(models.Model):
     name = models.CharField(max_length=255)
     label = models.CharField(max_length=255, blank=True, null=True)
     cryteria_id = models.ForeignKey(Criterion_of_ergonomy, on_delete=models.CASCADE,   null=True,)
+    is_active = models.BooleanField(default=False)
 
 class SpecialMethods(models.Model):
     """Специальные методы"""
@@ -272,8 +272,10 @@ class SystemEquastion(models.Model):
     ('house', 'House'),
     ('rooms', 'Rooms'),
     ]
+    name = models.TextField(blank=True)
     type = models.CharField(max_length = 50, choices = TYPE_CHOICES, default='house')
     criterion = models.ForeignKey(Criterion_of_ergonomy, on_delete=models.CASCADE, null=True)
+    is_active = models.BooleanField(default=False)
     
     
 class SystemEquastionUserInputParam(models.Model):
@@ -342,9 +344,11 @@ class CommonFormula(models.Model):
     type = models.CharField(max_length=50,
         choices=TYPE_CHOICES,
         default='global')
+    name = models.TextField(blank=True)
     criterion = models.ForeignKey(Criterion_of_ergonomy, on_delete=models.CASCADE, null=True)
     recommendation = models.TextField(blank=True)
     value_recomm = models.FloatField(blank=True)
+    is_active = models.BooleanField(default=False)
 
 class CommonFormulaRoomTypes(models.Model):
     commonformula = models.ForeignKey(CommonFormula, on_delete=models.CASCADE)
@@ -367,3 +371,181 @@ class CommonFormulaInputParam(models.Model):
         on_delete=models.CASCADE,
     )
     commonformula = models.ForeignKey(CommonFormula, on_delete=models.CASCADE)
+
+
+class SystemEquastionForCriterion(models.Model):
+    criterion = models.ForeignKey(
+        Criterion_of_ergonomy,
+        on_delete=models.CASCADE,
+    )
+
+
+
+class EquastionOfCriterionSystemEquastion(models.Model):
+    criterion_system_equastion = models.ForeignKey(
+        SystemEquastionForCriterion,
+        on_delete=models.CASCADE,
+    )
+    formula = models.ForeignKey(
+        Formula,
+        on_delete=models.CASCADE,
+    )
+    limit_equastion = models.TextField(blank=True)
+    recommendation = models.TextField(blank=True)
+
+
+class CilterionUsingForFormula(models.Model):
+    """
+    Связь: какие критерии используют какое системное уравнение для критерия.
+    (По сути — many-to-many между Criterion и SystemEquastionForCriterion)
+    """
+    system_equation_for_criteria = models.ForeignKey(
+        SystemEquastionForCriterion,
+        on_delete=models.CASCADE,
+    )
+    criterion = models.ForeignKey(
+        Criterion_of_ergonomy,
+        on_delete=models.CASCADE,
+    )
+
+class SystemEquastionForCriterion_UIP(models.Model):    
+    user_input_param = models.ForeignKey(
+        UserInputParam,
+        on_delete=models.CASCADE,
+        related_name='system_equation_bindings',
+    )
+    system_equation_for_criteria = models.ForeignKey(
+        SystemEquastionForCriterion,
+        on_delete=models.CASCADE,
+        related_name='input_params',
+    )
+class AutoCountingMethod(models.Model):
+    name = models.CharField(max_length= 40)
+    label =models.CharField(max_length= 40)
+    INPUT_TYPE_CHOICES = [
+        ('nothing', 'Nothing'),
+        ('rooms', 'Rooms'),
+        ('furniture', 'Furniture'),
+        ('roomsfurniture', 'Rooms Furniture'),
+    ]
+    inputType = models.CharField(
+        max_length=50,
+        choices=INPUT_TYPE_CHOICES,
+        default='nothing'
+    )
+class AutoCountingMethod_Criterion(models.Model):
+    criterion = models.ForeignKey(
+        Criterion_of_ergonomy,
+        on_delete=models.CASCADE,
+    )
+    auto_counting_method = models.ForeignKey( AutoCountingMethod, on_delete=models.CASCADE)\
+
+
+
+
+
+class Report(models.Model):
+    date = models.DateField()
+    Mark_of_Ergonomy = models.FloatField()
+    Score_Of_Ergonomy = models.FloatField()
+
+
+class Critery_of_Ergonomy_Report(models.Model):
+    report = models.ForeignKey(Report, on_delete=models.CASCADE)
+    weight = models.FloatField()
+    Name = models.CharField(max_length=255)
+    Score = models.FloatField()
+    Mark = models.FloatField()
+
+
+class Report_floorplan(models.Model):
+    report = models.ForeignKey(Report, on_delete=models.CASCADE)
+    img = models.FileField(upload_to='report_floorplan/')
+    floorpan_id = models.IntegerField()
+    width = models.FloatField()
+    height = models.FloatField()
+    pixel_to_m2 = models.FloatField()
+    square_of_habitation = models.FloatField()
+
+
+
+class Report_Room(models.Model):
+    floorplan = models.ForeignKey(Report_floorplan, on_delete=models.CASCADE)
+    min_x = models.FloatField()
+    max_x = models.FloatField()
+    max_y = models.FloatField()
+    min_y = models.FloatField()
+    room_type = models.CharField(max_length=100)
+    square_of_room = models.FloatField()
+    status = models.CharField(max_length=50, blank=True, null=True)
+
+
+
+class Report_Furniture(models.Model):
+    room = models.ForeignKey(Report_Room, on_delete=models.CASCADE)
+    furniture_type = models.CharField(max_length=100)
+    min_y = models.FloatField()
+    max_y = models.FloatField()
+    max_x = models.FloatField()
+    min_x = models.FloatField()
+    status = models.CharField(max_length=50, blank=True, null=True)
+
+
+
+class Report_Construct_eltment(models.Model):
+    room = models.ForeignKey(Report_Room, on_delete=models.CASCADE)
+    con_el_type = models.CharField(max_length=100)
+    min_y = models.FloatField()
+    max_y = models.FloatField()
+    max_x = models.FloatField()
+    min_x = models.FloatField()
+    status = models.CharField(max_length=50, blank=True, null=True)
+
+
+
+class calculation_result(models.Model):
+    cor = models.ForeignKey(Critery_of_Ergonomy_Report, on_delete=models.CASCADE)
+    name_of_calculation = models.CharField(max_length=255)
+    formula = models.TextField()
+    param_value = models.FloatField()
+    score = models.FloatField()
+
+
+
+class Report_Question_Answer(models.Model):
+    cor = models.ForeignKey(Critery_of_Ergonomy_Report, on_delete=models.CASCADE)
+    question = models.TextField()
+    answer = models.TextField()
+    score = models.FloatField()
+
+
+
+class SpecialMethodsResult(models.Model):
+    cor = models.ForeignKey(Critery_of_Ergonomy_Report, on_delete=models.CASCADE)
+    name_of_method = models.CharField(max_length=255)
+    results = models.JSONField()
+    score = models.FloatField()
+
+
+
+class ReportFloorplanRecommendation(models.Model):
+    floorplan = models.ForeignKey(Report_floorplan, on_delete=models.CASCADE)
+    recommendation = models.TextField()
+
+
+
+class ReportRoomRecommendation(models.Model):
+    room = models.ForeignKey(Report_Room, on_delete=models.CASCADE)
+    recommendation = models.TextField()
+
+
+
+class ReportFurnitureRecommendation(models.Model):
+    furniture = models.ForeignKey(Report_Furniture, on_delete=models.CASCADE)
+    recommendation = models.TextField()
+
+
+
+class ReportConstructElementRecommendation(models.Model):
+    construct_element = models.ForeignKey(Report_Construct_eltment, on_delete=models.CASCADE)
+    recommendation = models.TextField()

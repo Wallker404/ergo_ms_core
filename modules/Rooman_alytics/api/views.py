@@ -22,6 +22,10 @@ import math
 import uuid
 import base64
 from drf_yasg import openapi
+from . import acp_methods, special_methods
+import dataclasses
+import math
+from simpleeval import simple_eval
 CLUSTER_COLORS = [
     'rgb(54, 162, 235)',   # blue
     'rgb(255, 99, 132)',   # red
@@ -515,35 +519,61 @@ class ModelActiveByCategoryView(BaseAPIView):
 
 class CriteryPost(BaseAPIView):
     @swagger_auto_schema(
-        operation_summary="добавление нового критерия эргономичности",
-        responses={200: "Критерий успешно добавлен", 400: "Ошибка добавления критерия", 
-        409: "Критерий с таким названием уже существует"},
+        operation_summary="Добавление нового критерия эргономичности",
+        responses={
+            200: "Критерий успешно добавлен",
+            400: "Ошибка добавления критерия",
+        },
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
+            required=['name', 'weight', 'var_name'],
             properties={
-                'name': openapi.Schema(
-                    type=openapi.TYPE_STRING, 
-                    description='Имя критерия'
+                'name': openapi.Schema(type=openapi.TYPE_STRING, description='Имя критерия'),
+                'weight': openapi.Schema(type=openapi.TYPE_NUMBER, description='Вес критерия'),
+                'var_name': openapi.Schema(
+                    type=openapi.TYPE_STRING,
+                    description='Имя переменной (латиница/кириллица, до 15 символов)'
                 ),
-                'weight': openapi.Schema(
-                    type=openapi.TYPE_NUMBER,
-                    description='вес критерия'
-                )
+                'is_counting_by_system_equastion': openapi.Schema(
+                    type=openapi.TYPE_BOOLEAN,
+                    description='Способ вычисления: false — обычный, true — через систему уравнений',
+                    default=False
+                ),
             }
         )
     )
     def post(self, request):
-        name = request.data['name']
-        weight = request.data['weight']
+        name = request.data.get('name', '').strip()
+        weight = request.data.get('weight')
+        var_name = request.data.get('var_name', '').strip()
+        is_counting_by_system_equastion = bool(request.data.get('is_counting_by_system_equastion', False))
 
-            # Проверка на дубликат
+        # Валидация обязательных полей
+        if not name:
+            return Response({'error': 'Поле "name" обязательно'}, status=400)
+        if not var_name:
+            return Response({'error': 'Поле "var_name" (имя переменной) обязательно'}, status=400)
+        if len(var_name) > 15:
+            return Response({'error': 'Имя переменной не должно превышать 15 символов'}, status=400)
+
+        # Проверка уникальности имени критерия
         if Criterion_of_ergonomy.objects.filter(name=name).exists():
             return Response({'error': 'Критерий с таким названием уже существует'}, status=400)
 
+        # Проверка уникальности имени переменной
+        if Criterion_of_ergonomy.objects.filter(var_name=var_name).exists():
+            return Response({'error': f'Переменная с именем "{var_name}" уже существует'}, status=400)
 
-        new_criteria = Criterion_of_ergonomy.objects.create(name = name, weight = weight)
+        try:
+            new_criteria = Criterion_of_ergonomy.objects.create(
+                name=name,
+                weight=weight if weight is not None else 0,
+                var_name=var_name,
+                is_counting_by_system_equastion=is_counting_by_system_equastion,
+            )
+        except Exception as e:
+            return Response({'error': f'Ошибка создания: {str(e)}'}, status=400)
 
-                # Преобразование модели в JSON-совместимый словарь
         criteria_data = {
             'id': new_criteria.id,
             'name': new_criteria.name,
@@ -554,11 +584,13 @@ class CriteryPost(BaseAPIView):
             'terrible_mark_border': new_criteria.terrible_mark_border,
             'bad_mark_border': new_criteria.bad_mark_border,
             'normal_mark_border': new_criteria.normal_mark_border,
-            'good_mark_border': new_criteria.good_mark_border,    
+            'good_mark_border': new_criteria.good_mark_border,
+            'var_name': new_criteria.var_name,
+            'is_counting_by_system_equastion': new_criteria.is_counting_by_system_equastion,
         }
 
+        return Response({'message': 'Критерий успешно добавлен', 'object': criteria_data}, status=200)
 
-        return Response({'message':'Критерий успешно добавлен', "object":criteria_data}, status=200 )
 
 
 class CriterionListView(BaseAPIView):
@@ -580,9 +612,12 @@ class CriterionListView(BaseAPIView):
                 'terrible_mark_border': c.terrible_mark_border,
                 'bad_mark_border': c.bad_mark_border,
                 'normal_mark_border': c.normal_mark_border,
-                'good_mark_border': c.good_mark_border,    
+                'good_mark_border': c.good_mark_border,
+                'var_name': c.var_name,
+                'is_counting_by_system_equastion': c.is_counting_by_system_equastion,
             })
         return Response(data, status=200)
+
 class CriterionBatchUpdateView(BaseAPIView):
     @swagger_auto_schema(
         operation_summary="Обновление списка критериев эргономичности",
@@ -601,6 +636,11 @@ class CriterionBatchUpdateView(BaseAPIView):
                     'bad_mark_border': openapi.Schema(type=openapi.TYPE_NUMBER),
                     'normal_mark_border': openapi.Schema(type=openapi.TYPE_NUMBER),
                     'good_mark_border': openapi.Schema(type=openapi.TYPE_NUMBER),
+                    'var_name': openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description='Имя переменной (до 15 символов). Изменять с осторожностью.'
+                    ),
+                    # is_counting_by_system_equastion НЕ включён — его менять нельзя
                 }
             )
         ),
@@ -611,7 +651,6 @@ class CriterionBatchUpdateView(BaseAPIView):
         if not isinstance(data, list) or len(data) == 0:
             return Response({"error": "Ожидается непустой список объектов"}, status=400)
 
-        # 1. Проверка наличия всех ID и загрузка из БД
         requested_ids = [item.get('id') for item in data if 'id' in item]
         if not requested_ids:
             return Response({"error": "В каждом объекте должно быть поле 'id'"}, status=400)
@@ -623,26 +662,53 @@ class CriterionBatchUpdateView(BaseAPIView):
             missing = set(requested_ids) - set(existing_map.keys())
             return Response({"error": f"Критерии с ID {list(missing)} не найдены в БД"}, status=404)
 
+        # Проверка уникальности var_name (с учётом того, что свой же var_name не считается дубликатом)
+        new_var_names = [item.get('var_name') for item in data if item.get('var_name')]
+        if new_var_names:
+            duplicates_in_request = set([v for v in new_var_names if new_var_names.count(v) > 1])
+            if duplicates_in_request:
+                return Response(
+                    {"error": f"В запросе есть повторяющиеся имена переменных: {list(duplicates_in_request)}"},
+                    status=400
+                )
+
+            existing_vars = {
+                c.var_name: c.id
+                for c in Criterion_of_ergonomy.objects.filter(var_name__in=new_var_names)
+            }
+            for item in data:
+                new_var = item.get('var_name')
+                if new_var and new_var in existing_vars and existing_vars[new_var] != item['id']:
+                    return Response(
+                        {"error": f"Имя переменной '{new_var}' уже используется другим критерием (ID {existing_vars[new_var]})"},
+                        status=400
+                    )
+
+        # Проверка границ
         for item in data:
             cid = item['id']
             obj = existing_map[cid]
 
             t_border = item.get('terrible_mark_border', obj.terrible_mark_border)
-            b_border  = item.get('bad_mark_border', obj.bad_mark_border)
+            b_border = item.get('bad_mark_border', obj.bad_mark_border)
             n_border = item.get('normal_mark_border', obj.normal_mark_border)
-            g_border  = item.get('good_mark_border', obj.good_mark_border)
+            g_border = item.get('good_mark_border', obj.good_mark_border)
 
             if t_border <= 0:
                 return Response({"error": f"terrible_mark_border для ID {cid} должен быть > 0"}, status=400)
 
             if not (t_border < b_border < n_border < g_border):
                 return Response({
-                    "error": f"Нарушен порядок границ для ID {cid}. "
-                             "Верхняя граница каждого уровня должна быть строго меньше нижней границы следующего.",
-                    "received": {"terrible_mark_border": t_border, "bad_mark_border": b_border, "normal_mark_border": n_border,
-                                 "good_mark_border": g_border, }
+                    "error": f"Нарушен порядок границ для ID {cid}.",
+                    "received": {
+                        "terrible_mark_border": t_border,
+                        "bad_mark_border": b_border,
+                        "normal_mark_border": n_border,
+                        "good_mark_border": g_border,
+                    }
                 }, status=400)
 
+        # Проверка суммы весов
         active_weight_sum = sum(
             item.get('weight', existing_map[item['id']].weight)
             for item in data
@@ -653,12 +719,13 @@ class CriterionBatchUpdateView(BaseAPIView):
             return Response({
                 "error": f"Сумма весов активных критериев должна быть равна 1.0. Текущая сумма: {active_weight_sum:.4f}"
             }, status=400)
+
+        # ⚠️ ВАЖНО: is_counting_by_system_equastion НЕ входит в список обновляемых полей
         updatable_fields = [
             'name', 'is_active', 'weight', 'color',
-            'terrible_mark_border',
-            'bad_mark_border',
-            'normal_mark_border',
-            'good_mark_border'
+            'terrible_mark_border', 'bad_mark_border',
+            'normal_mark_border', 'good_mark_border',
+            'var_name',  # имя переменной можно менять
         ]
 
         updated_count = 0
@@ -681,22 +748,20 @@ class CriterionBatchUpdateView(BaseAPIView):
             "active_weight_sum": round(active_weight_sum, 4)
         }, status=200)
 
+
 class CriterionDeleteView(BaseAPIView):
     @swagger_auto_schema(
         operation_summary="Удаление критерия по ID",
         manual_parameters=[
             openapi.Parameter(
-                'id',
-                openapi.IN_PATH,
-                type=openapi.TYPE_INTEGER,
-                required=True,
+                'id', openapi.IN_PATH,
+                type=openapi.TYPE_INTEGER, required=True,
                 description='ID критерия для удаления'
             )
         ],
         responses={
-            204: 'Критерий успешно удалён (без тела ответа)',
+            204: 'Критерий успешно удалён',
             404: 'Критерий не найден',
-            400: 'Критерий используется и не может быть удалён'
         }
     )
     def delete(self, request, pk):
@@ -704,8 +769,41 @@ class CriterionDeleteView(BaseAPIView):
             criterion = Criterion_of_ergonomy.objects.get(id=pk)
         except Criterion_of_ergonomy.DoesNotExist:
             return Response({'error': f'Критерий с ID {pk} не найден'}, status=404)
-        criterion.delete()
-        return Response(status=204)
+        
+        try:
+            # Собираем информацию о том, что будет удалено (для логирования)
+            related_info = {
+                'form_questions': criterion.form_question_set.count(),
+                'formula_params': criterion.formulaparam_set.count(),
+                'system_equations': criterion.systemequastion_set.count(),
+                'common_formulas': criterion.commonformula_set.count(),
+                'system_equations_for_criterion': criterion.systemequastionforcriterion_set.count(),
+                'criterion_using_for_formulas': criterion.cilterionusingforformula_set.count(),
+                'auto_counting_methods': criterion.autocountingmethod_criterion_set.count(),
+            }
+            
+            # Удаляем критерий (Django автоматически удалит всё каскадно благодаря on_delete=CASCADE)
+            deleted_count, deleted_details = criterion.delete()
+            
+            # Логируем результат
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"✅ Критерий #{pk} '{criterion.name}' удалён. Всего удалено объектов: {deleted_count}")
+            logger.debug(f"Детали удаления: {deleted_details}")
+            
+            return Response({
+                'message': f'Критерий "{criterion.name}" успешно удалён',
+                'deleted_count': deleted_count,
+                'deleted_details': related_info
+            }, status=200)
+            
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"❌ Ошибка при удалении критерия #{pk}: {str(e)}", exc_info=True)
+            return Response({
+                'error': f'Ошибка при удалении критерия: {str(e)}'
+            }, status=500)
 
 class CriterionSurveyStatsView(BaseAPIView):    
     @swagger_auto_schema(
@@ -770,44 +868,69 @@ class CriterionSurveyStatsView(BaseAPIView):
         }
     )
     def get(self, request, criterion_id):
-        # 🔹 1. Валидация ID
         try:
             criterion_id = int(criterion_id)
         except (ValueError, TypeError):
-            return Response(
-                {'error': 'Некорректный формат ID критерия'}, 
-                status=400
-            )
-        if not Criterion_of_ergonomy.objects.filter(id=criterion_id).exists():
-            return Response(
-                {'error': f'Критерий с ID {criterion_id} не найден'}, 
-                status=404
-            )
-        
-        # 🔹 3. Агрегируем статистику вопросов по типам
-        # Замените 'general' / 'room' на реальные значения из QuestionType.choices
-        critery =Criterion_of_ergonomy.objects.get(id=criterion_id)
+            return Response({'error': 'Некорректный ID'}, status=400)
+
+        try:
+            criterion = Criterion_of_ergonomy.objects.get(id=criterion_id)
+        except Criterion_of_ergonomy.DoesNotExist:
+            return Response({'error': 'Критерий не найден'}, status=404)
+
+        is_system = criterion.is_counting_by_system_equastion
+        criterion_color = criterion.color
+
+        # Общая статистика по анкете (вопросам)
         question_stats = Form_question.objects.filter(
-            criterion_id=criterion_id
+            criterion_id=criterion_id, is_active=True
         ).aggregate(
-            general_count=Count('id', filter=Q(type='for_floorplan')),
-            room_total_count=Count('id', filter=Q(type='for_every_room')),
+            general=Count('id', filter=Q(type='for_floorplan')),
+            room_total=Count('id', filter=Q(type='for_every_room')),
         )
-        formula_stats = {
-            'ordinary': 0,      # Обычные уравнения
-            'system': 0,        # Системы уравнений
-            'forPremises': 0,   # Для помещения в целом
-            'perRoom': 0,       # По комнатам
-        }
-        response_data = {
-            'name':critery.name,
+
+        # Разная статистика для формул в зависимости от режима
+        if not is_system:
+            # ─ Обычный режим (анкетирование + формулы) ──
+            fp_ids = FormulaParam.objects.filter(
+                cryteria_id=criterion_id, is_active=True
+            ).values_list('id', flat=True)
+
+            formulas_data = {
+                'formulas_count': CommonFormula.objects.filter(criterion_id=criterion_id, is_active=True).count(),
+                'systems_count': SystemEquastionForCriterion.objects.filter(criterion_id=criterion_id).count(),
+                'limit_params_count': LimitParam.objects.filter(formula_param_id__in=fp_ids).count(),
+                'parameters_count': UserInputParam.objects.filter(formula_param_id__in=fp_ids).count(),
+                'auto_params_count': AutoCountingParam.objects.filter(formula_param_id__in=fp_ids).count(),
+            }
+        else:
+            # ── Режим системы уравнений ──
+            sys_eq_ids = SystemEquastionForCriterion.objects.filter(
+                criterion_id=criterion_id
+            ).values_list('id', flat=True)
+
+            formulas_data = {
+                'equations_count': EquastionOfCriterionSystemEquastion.objects.filter(
+                    criterion_system_equastion_id__in=sys_eq_ids
+                ).count(),
+                'variables_count': SystemEquastionForCriterion_UIP.objects.filter(
+                    system_equation_for_criteria_id__in=sys_eq_ids
+                ).values('user_input_param_id').distinct().count(),
+                'other_criteria_count': CilterionUsingForFormula.objects.filter(
+                    system_equation_for_criteria_id__in=sys_eq_ids
+                ).values('criterion_id').distinct().count(),
+            }
+
+        return Response({
+            'name': criterion.name,
+            'color': criterion_color,
+            'is_counting_by_system_equastion': is_system,
             'questions': {
-                'general': question_stats.get('general_count') or 0,
-                'room_total': question_stats.get('room_total_count') or 0,
+                'general': question_stats.get('general') or 0,
+                'room_total': question_stats.get('room_total') or 0,
             },
-            'formulas': formula_stats
-        }
-        return Response(response_data, status=200)
+            'formulas': formulas_data
+        }, status=200)
 
 class RoomTypeListView(BaseAPIView):
     @swagger_auto_schema(
@@ -1028,7 +1151,6 @@ class QuestionCreateView(BaseAPIView):
             }
         }, status=201)
 
-
 class QuestionDeleteView(BaseAPIView):
     @swagger_auto_schema(
         operation_summary="Удаление вопроса",
@@ -1055,7 +1177,6 @@ class QuestionDeleteView(BaseAPIView):
         question.delete()
         
         return Response(status=204)
-
 
 class QuestionBatchSaveView(BaseAPIView):
     @swagger_auto_schema(
@@ -1315,7 +1436,6 @@ class QuestionBatchSaveView(BaseAPIView):
             'errors': errors if errors else None
         }, status=207 if errors else 200)   
 
-
 class CriterionQuestionsListView(BaseAPIView):
     @swagger_auto_schema(
         operation_summary="Получение списка вопросов критерия",
@@ -1472,55 +1592,49 @@ class ConstructElementTypeListView(BaseAPIView):
 
 class FloorplanSaveView(BaseAPIView):
     parser_classes = (MultiPartParser, FormParser, JSONParser)
-    
+
     def post(self, request):
         try:
-            # 🔹 1. Получаем файл изображения
             image_file = request.FILES.get('image')
             if not image_file:
-                return Response({'error': 'Файл изображения обязателен'}, 
-                              status=400)
-            
-            _, ext = os.path.splitext(image_file.name)
-            unique_filename = f"{uuid.uuid4().hex}{ext.lower()}"
-            image_file.name = unique_filename 
+                return Response({'error': 'Файл изображения обязателен'}, status=400)
 
-            # 🔹 2. Получаем остальные данные
+            _, ext = os.path.splitext(image_file.name)
+            image_file.name = f"{uuid.uuid4().hex}{ext.lower()}"
+
             floorplan_name = request.data.get('name', 'floorplan')
             width = float(request.data.get('width', 0))
             height = float(request.data.get('height', 0))
             pixel_to_m = float(request.data.get('pixel_to_m_in_square', 0))
             square_habitation = float(request.data.get('square_of_habitation', 0))
-            
-            # 🔹 3. Создаём Floorplan с файлом
+
             floorplan = Floorplan.objects.create(
-                img=image_file,  # ← файл напрямую
+                img=image_file,
                 width=width,
                 height=height,
                 pixel_to_m_in_square=pixel_to_m,
                 square_of_habitation=square_habitation
             )
-            
-            # 🔹 4. Получаем JSON с аннотациями
-            # Если данные пришли как JSON строка в поле 'data'
+
             annotations_json = request.data.get('data')
             if isinstance(annotations_json, str):
                 annotations = json.loads(annotations_json)
             else:
                 annotations = annotations_json or {}
-            
+
             rooms_data = annotations.get('rooms', [])
             walls_data = annotations.get('walls', [])
             furniture_data = annotations.get('furniture', [])
-            
-            # 🔹 5. Сохраняем комнаты
+
+            # === СОХРАНЯЕМ КОМНАТЫ ===
+            # Маппинг frontend_id -> backend_id
             room_id_map = {}
-            
+
             for room_data in rooms_data:
                 room_type = RoomType.objects.filter(id=room_data.get('type')).first()
                 if not room_type:
                     continue
-                    
+
                 bbox = room_data.get('bbox', [0, 0, 0, 0])
                 room = Room.objects.create(
                     floorplan_id=floorplan,
@@ -1528,18 +1642,18 @@ class FloorplanSaveView(BaseAPIView):
                     min_x=float(bbox[0]),
                     max_x=float(bbox[1]),
                     min_y=float(bbox[2]),
-                    max_y=float(bbox[3])
+                    max_y=float(bbox[3]),
+                    square=float(room_data.get('realArea', 0))
                 )
+                # Сохраняем маппинг frontend_id -> backend_id
                 room_id_map[room_data['id']] = room.id
-            
-            # 🔹 6. Сохраняем стены
+
+            # === СОХРАНЯЕМ СТЕНЫ ===
             for wall_data in walls_data:
-                construct_type = ConstructElementType.objects.filter(
-                    id=wall_data.get('type')
-                ).first()
+                construct_type = ConstructElementType.objects.filter(id=wall_data.get('type')).first()
                 if not construct_type:
                     continue
-                
+
                 bbox = wall_data.get('bbox', [0, 0, 0, 0])
                 ConstructElement.objects.create(
                     floorplan_id=floorplan,
@@ -1549,27 +1663,32 @@ class FloorplanSaveView(BaseAPIView):
                     min_y=float(bbox[2]),
                     max_y=float(bbox[3]),
                 )
-            
-            # 🔹 7. Сохраняем мебель
+
+            # === СОХРАНЯЕМ МЕБЕЛЬ ===
             for furn_data in furniture_data:
-                furniture_type = FurnitureType.objects.filter(
-                    id=furn_data.get('type')
-                ).first()
+                furniture_type = FurnitureType.objects.filter(id=furn_data.get('type')).first()
                 if not furniture_type:
                     continue
-                
-                # Находим комнату
+
+                # ✅ Определяем комнату по room_id (frontend_id), а не по label
                 room = None
-                furn_room_label = furn_data.get('room')
-                
-                if furn_room_label:
-                    for room_id, backend_id in room_id_map.items():
-                        room_obj = Room.objects.get(id=backend_id)
-                        if (room_obj.room_type_id.label == furn_room_label or 
-                            room_obj.room_type_id.type_name == furn_room_label):
-                            room = room_obj
+                frontend_room_id = furn_data.get('room_id')
+
+                if frontend_room_id is not None and frontend_room_id in room_id_map:
+                    backend_room_id = room_id_map[frontend_room_id]
+                    room = Room.objects.filter(id=backend_room_id).first()
+                else:
+                    # Fallback: если room_id не передан, ищем комнату по позиции центра мебели
+                    bbox = furn_data.get('bbox', [0, 0, 0, 0])
+                    center_x = (float(bbox[0]) + float(bbox[1])) / 2
+                    center_y = (float(bbox[2]) + float(bbox[3])) / 2
+
+                    for r in Room.objects.filter(floorplan_id=floorplan):
+                        if (r.min_x <= center_x <= r.max_x and
+                            r.min_y <= center_y <= r.max_y):
+                            room = r
                             break
-                
+
                 bbox = furn_data.get('bbox', [0, 0, 0, 0])
                 Furniture.objects.create(
                     furniture_type_id=furniture_type,
@@ -1579,7 +1698,7 @@ class FloorplanSaveView(BaseAPIView):
                     min_y=float(bbox[2]),
                     max_y=float(bbox[3])
                 )
-            
+
             return Response({
                 'message': 'План успешно сохранён',
                 'floorplan_id': floorplan.id,
@@ -1587,13 +1706,13 @@ class FloorplanSaveView(BaseAPIView):
                 'walls_count': len(walls_data),
                 'furniture_count': len(furniture_data)
             }, status=201)
-            
+
         except json.JSONDecodeError as e:
-            return Response({'error': f'Ошибка JSON: {str(e)}'}, 
-                          status=400)
+            return Response({'error': f'Ошибка JSON: {str(e)}'}, status=400)
         except Exception as e:
-            return Response({'error': str(e)}, 
-                          status=500)
+            import traceback
+            traceback.print_exc()
+            return Response({'error': str(e)}, status=500)
 
 class FloorplanListView(BaseAPIView):
     def get(self, request):
@@ -1636,58 +1755,42 @@ class FloorplanDetailView(BaseAPIView):
                 'room_set__furniture_set__furniture_type_id',
                 'constructelement_set__construct_element_type_id'
             ).get(id=pk)
-            
-            # 🔹 Читаем файл и кодируем в base64
-            img_base64 = None
+
+            img_url = None
             if floorplan.img and os.path.isfile(floorplan.img.path):
                 with open(floorplan.img.path, 'rb') as f:
                     img_data = f.read()
                     img_base64 = base64.b64encode(img_data).decode('utf-8')
                     ext = os.path.splitext(floorplan.img.name)[1].lower()
                     mime_type = {
-                        '.jpg': 'image/jpeg',
-                        '.jpeg': 'image/jpeg',
-                        '.png': 'image/png',
-                        '.webp': 'image/webp'
+                        '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+                        '.png': 'image/png', '.webp': 'image/webp'
                     }.get(ext, 'image/jpeg')
                     img_url = f'data:{mime_type};base64,{img_base64}'
-            else:
-                img_url = None
-            
-            # 🔹 Формируем комнаты + мебель
+
             rooms = []
             furniture = []
-            
             for room in floorplan.room_set.all():
                 rooms.append({
                     'id': room.id,
                     'type': room.room_type_id.id if room.room_type_id else None,
                     'label': room.room_type_id.label if room.room_type_id else '',
                     'color': room.room_type_id.color if room.room_type_id else '#0d6efd',
-                    'bbox': [
-                        float(room.min_x),
-                        float(room.max_x),
-                        float(room.min_y),
-                        float(room.max_y)
-                    ],
+                    'bbox': [float(room.min_x), float(room.max_x), float(room.min_y), float(room.max_y)],
                     'square': float(room.square) if room.square else 0
                 })
-                
+
                 for furn in room.furniture_set.all():
                     furniture.append({
                         'id': furn.id,
                         'type': furn.furniture_type_id.id if furn.furniture_type_id else None,
                         'label': furn.furniture_type_id.label if furn.furniture_type_id else '',
                         'color': furn.furniture_type_id.color if furn.furniture_type_id else '#0d6efd',
-                        'bbox': [
-                            float(furn.min_x),
-                            float(furn.max_x),
-                            float(furn.min_y),
-                            float(furn.max_y)
-                        ],
-                        'room': room.room_type_id.label if room.room_type_id else None
+                        'bbox': [float(furn.min_x), float(furn.max_x), float(furn.min_y), float(furn.max_y)],
+                        'room': room.room_type_id.label if room.room_type_id else None,
+                        'room_id': room.id,  # ✅ ДОБАВЛЕНО: ID комнаты
                     })
-            
+
             walls = []
             for wall in floorplan.constructelement_set.all():
                 walls.append({
@@ -1695,17 +1798,12 @@ class FloorplanDetailView(BaseAPIView):
                     'type': wall.construct_element_type_id.id if wall.construct_element_type_id else None,
                     'label': wall.construct_element_type_id.label if wall.construct_element_type_id else '',
                     'color': wall.construct_element_type_id.color if wall.construct_element_type_id else '#0d6efd',
-                    'bbox': [
-                        float(wall.min_x),
-                        float(wall.max_x),
-                        float(wall.min_y),
-                        float(wall.max_y)
-                    ]
+                    'bbox': [float(wall.min_x), float(wall.max_x), float(wall.min_y), float(wall.max_y)]
                 })
-            
+
             return Response({
                 'id': floorplan.id,
-                'img': img_url,  # ← Base64 вместо URL
+                'img': img_url,
                 'width': float(floorplan.width) if floorplan.width else 0,
                 'height': float(floorplan.height) if floorplan.height else 0,
                 'upload_at': floorplan.upload_at.isoformat() if floorplan.upload_at else None,
@@ -1715,20 +1813,18 @@ class FloorplanDetailView(BaseAPIView):
                 'walls': walls,
                 'furniture': furniture
             }, status=200)
-            
+
         except Floorplan.DoesNotExist:
             return Response({'error': 'План не найден'}, status=404)
         except Exception as e:
             import traceback
             traceback.print_exc()
             return Response({'error': str(e)}, status=500)
-    
-    # 🔸 PUT — обновить план (метаданные + опционально файл + аннотации)
     def put(self, request, pk):
         try:
             floorplan = Floorplan.objects.get(id=pk)
             
-            # 🔹 Обновляем метаданные
+            # Обновляем метаданные плана
             if 'name' in request.data:
                 floorplan.name = request.data['name']
             if 'width' in request.data:
@@ -1740,7 +1836,7 @@ class FloorplanDetailView(BaseAPIView):
             if 'square_of_habitation' in request.data:
                 floorplan.square_of_habitation = float(request.data['square_of_habitation'])
             
-            # 🔹 Опционально: замена изображения
+            # Опционально: замена изображения
             new_image = request.FILES.get('image')
             if new_image:
                 if floorplan.img and os.path.isfile(floorplan.img.path):
@@ -1751,75 +1847,136 @@ class FloorplanDetailView(BaseAPIView):
             
             floorplan.save()
             
-            # 🔹 Опционально: полная замена аннотаций
+            # Обрабатываем аннотации
             annotations_json = request.data.get('data')
             if annotations_json:
                 annotations = json.loads(annotations_json) if isinstance(annotations_json, str) else annotations_json
                 
-                # 🔸 Получаем все комнаты плана для удаления мебели
-                rooms_to_delete = Room.objects.filter(floorplan_id=floorplan)
-                room_ids_to_delete = [room.id for room in rooms_to_delete]
+                # === КОМНАТЫ ===
+                existing_rooms = {r.id: r for r in Room.objects.filter(floorplan_id=floorplan)}
+                received_room_ids = set()
+                frontend_to_backend_room_id = {}  # маппинг frontend_id -> backend_id
                 
-                # 🔸 Удаляем мебель, которая принадлежит комнатам этого плана
-                Furniture.objects.filter(room_id__in=room_ids_to_delete).delete()
-                
-                # 🔸 Удаляем комнаты и стены
-                Room.objects.filter(floorplan_id=floorplan).delete()
-                ConstructElement.objects.filter(floorplan_id=floorplan).delete()
-                
-                # 🔸 Сохраняем новые аннотации
-                room_id_map = {}
-                
-                # Комнаты
                 for room_data in annotations.get('rooms', []):
                     room_type = RoomType.objects.filter(id=room_data.get('type')).first()
-                    if not room_type: continue
+                    if not room_type:
+                        continue
                     
                     bbox = room_data.get('bbox', [0]*4)
+                    frontend_id = room_data.get('id')
                     
-                    room = Room.objects.create(
-                        floorplan_id=floorplan,
-                        room_type_id=room_type,
-                        min_x=float(bbox[0]),
-                        max_x=float(bbox[1]),
-                        min_y=float(bbox[2]),
-                        max_y=float(bbox[3]),
-                        square=float(room_data.get('square', 0))
-                    )
-                    room_id_map[room_data['id']] = room.id
+                    if frontend_id and frontend_id in existing_rooms:
+                        # Обновляем существующую комнату
+                        room = existing_rooms[frontend_id]
+                        room.room_type_id = room_type
+                        room.min_x = float(bbox[0])
+                        room.max_x = float(bbox[1])
+                        room.min_y = float(bbox[2])
+                        room.max_y = float(bbox[3])
+                        room.square = float(room_data.get('realArea', 0))
+                        room.save()
+                        received_room_ids.add(frontend_id)
+                        frontend_to_backend_room_id[frontend_id] = room.id
+                    else:
+                        # Создаём новую комнату
+                        room = Room.objects.create(
+                            floorplan_id=floorplan,
+                            room_type_id=room_type,
+                            min_x=float(bbox[0]),
+                            max_x=float(bbox[1]),
+                            min_y=float(bbox[2]),
+                            max_y=float(bbox[3]),
+                            square=float(room_data.get('realArea', 0))
+                        )
+                        if frontend_id:
+                            frontend_to_backend_room_id[frontend_id] = room.id
                 
-                # Стены
+                # Удаляем комнаты, которых нет в переданном списке
+                rooms_to_delete = [rid for rid in existing_rooms.keys() if rid not in received_room_ids]
+                if rooms_to_delete:
+                    Furniture.objects.filter(room_id__in=rooms_to_delete).delete()
+                    Room.objects.filter(id__in=rooms_to_delete).delete()
+                
+                # === СТЕНЫ ===
+                existing_walls = {w.id: w for w in ConstructElement.objects.filter(floorplan_id=floorplan)}
+                received_wall_ids = set()
+                
                 for wall_data in annotations.get('walls', []):
                     ct = ConstructElementType.objects.filter(id=wall_data.get('type')).first()
-                    if not ct: continue
+                    if not ct:
+                        continue
+                    
                     bbox = wall_data.get('bbox', [0]*4)
-                    ConstructElement.objects.create(
-                        floorplan_id=floorplan,
-                        construct_element_type_id=ct,
-                        min_x=float(bbox[0]), max_x=float(bbox[1]),
-                        min_y=float(bbox[2]), max_y=float(bbox[3])
-                    )
+                    frontend_id = wall_data.get('id')
+                    
+                    if frontend_id and frontend_id in existing_walls:
+                        wall = existing_walls[frontend_id]
+                        wall.construct_element_type_id = ct
+                        wall.min_x = float(bbox[0])
+                        wall.max_x = float(bbox[1])
+                        wall.min_y = float(bbox[2])
+                        wall.max_y = float(bbox[3])
+                        wall.save()
+                        received_wall_ids.add(frontend_id)
+                    else:
+                        ConstructElement.objects.create(
+                            floorplan_id=floorplan,
+                            construct_element_type_id=ct,
+                            min_x=float(bbox[0]),
+                            max_x=float(bbox[1]),
+                            min_y=float(bbox[2]),
+                            max_y=float(bbox[3])
+                        )
                 
-                # Мебель
+                walls_to_delete = [wid for wid in existing_walls.keys() if wid not in received_wall_ids]
+                if walls_to_delete:
+                    ConstructElement.objects.filter(id__in=walls_to_delete).delete()
+                
+                # === МЕБЕЛЬ ===
+                all_rooms = {r.id: r for r in Room.objects.filter(floorplan_id=floorplan)}
+                existing_furniture = {f.id: f for f in Furniture.objects.filter(room_id__in=all_rooms.keys())}
+                received_furniture_ids = set()
+                
                 for furn_data in annotations.get('furniture', []):
                     ft = FurnitureType.objects.filter(id=furn_data.get('type')).first()
-                    if not ft: continue
-                    
-                    room = None
-                    if furn_data.get('room'):
-                        for rid, bid in room_id_map.items():
-                            r = Room.objects.get(id=bid)
-                            if r.room_type_id.label == furn_data['room']:
-                                room = r
-                                break
+                    if not ft:
+                        continue
                     
                     bbox = furn_data.get('bbox', [0]*4)
-                    Furniture.objects.create(
-                        furniture_type_id=ft,
-                        room_id=room,
-                        min_x=float(bbox[0]), max_x=float(bbox[1]),
-                        min_y=float(bbox[2]), max_y=float(bbox[3])
-                    )
+                    frontend_id = furn_data.get('id')
+                    
+                    # Определяем комнату для мебели по room_id
+                    room = None
+                    frontend_room_id = furn_data.get('room_id')
+                    if frontend_room_id and frontend_room_id in frontend_to_backend_room_id:
+                        backend_room_id = frontend_to_backend_room_id[frontend_room_id]
+                        room = all_rooms.get(backend_room_id)
+                    
+                    if frontend_id and frontend_id in existing_furniture:
+                        # Обновляем существующую мебель
+                        furn = existing_furniture[frontend_id]
+                        furn.furniture_type_id = ft
+                        furn.room_id = room
+                        furn.min_x = float(bbox[0])
+                        furn.max_x = float(bbox[1])
+                        furn.min_y = float(bbox[2])
+                        furn.max_y = float(bbox[3])
+                        furn.save()
+                        received_furniture_ids.add(frontend_id)
+                    else:
+                        # Создаём новую мебель
+                        Furniture.objects.create(
+                            furniture_type_id=ft,
+                            room_id=room,
+                            min_x=float(bbox[0]),
+                            max_x=float(bbox[1]),
+                            min_y=float(bbox[2]),
+                            max_y=float(bbox[3])
+                        )
+                
+                furniture_to_delete = [fid for fid in existing_furniture.keys() if fid not in received_furniture_ids]
+                if furniture_to_delete:
+                    Furniture.objects.filter(id__in=furniture_to_delete).delete()
             
             return Response({
                 'message': 'План обновлён',
@@ -1829,6 +1986,8 @@ class FloorplanDetailView(BaseAPIView):
         except Floorplan.DoesNotExist:
             return Response({'error': 'План не найден'}, status=404)
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return Response({'error': str(e)}, status=500)
     
     # 🔸 DELETE — удалить план + все связанные данные + файл изображения
@@ -1930,7 +2089,6 @@ PARAMETER_REQUEST_SCHEMA = openapi.Schema(
     }
 )
 
-
 def _serialize_param_dict(param, p_type):
     """Единая сериализация параметра в dict"""
     fp = param.formula_param
@@ -1941,12 +2099,9 @@ def _serialize_param_dict(param, p_type):
         'cryteria_id': fp.cryteria_id_id,
         'inputType': 'manual' if p_type == 'user' else 'auto',
         'type': 'UserInputParam' if p_type == 'user' else 'AutoCountingParam',
+        'isActive': fp.is_active, 
     }
-    print('==============================')
-    print(p_type)
-    print('==============================')
     if p_type == 'user':
-        # ✅ Используем values_list для производительности
         room_ids = list(param.userinputparamroomtype_set.values_list('room_type_id', flat=True))
         base.update({
             'paramType': param.type,
@@ -1981,7 +2136,6 @@ def _serialize_param_dict(param, p_type):
             'furniture_type_id': acp.furniture_type_id if acp else None,
         })
     return base
-
 
 class ParameterListView(BaseAPIView):
     @swagger_auto_schema(
@@ -2030,7 +2184,8 @@ class ParameterListView(BaseAPIView):
             fp = FormulaParam.objects.create(
                 name=data.get('varName'),
                 label=data.get('label', ''),
-                cryteria_id_id=cryteria_id
+                cryteria_id_id=cryteria_id,
+                is_active=data.get('isActive', False)
             )
 
             if input_type == 'manual':
@@ -2075,7 +2230,6 @@ class ParameterListView(BaseAPIView):
             return Response(_serialize_param_dict(param, p_type), status=201)
         except Exception as e:
             return Response({'error': str(e)}, status=500)
-
 
 class ParameterDetailView(BaseAPIView):
     def _get_param(self, pk):
@@ -2122,6 +2276,7 @@ class ParameterDetailView(BaseAPIView):
                 fp.name = data.get('varName', fp.name)
                 fp.label = data.get('label', fp.label)
                 fp.cryteria_id_id = data.get('cryteria_id', fp.cryteria_id_id)
+                fp.is_active = data.get('isActive', fp.is_active)
                 fp.save()
 
                 type_changed = (current_type == 'user' and input_type == 'auto') or \
@@ -2240,8 +2395,6 @@ class ParameterDetailView(BaseAPIView):
         except Exception as e:
             return Response({'error': str(e)}, status=500)
 
-
-# 🔹 Схемы для ограничений
 LIMIT_ITEM_SCHEMA = openapi.Schema(
     type=openapi.TYPE_OBJECT,
     properties={
@@ -2264,7 +2417,6 @@ LIMIT_ITEM_SCHEMA = openapi.Schema(
     }
 )
 
-# ✅ ИСПРАВЛЕНО: добавлен items= для roomValues
 LIMIT_REQUEST_SCHEMA = openapi.Schema(
     type=openapi.TYPE_OBJECT,
     properties={
@@ -2286,7 +2438,6 @@ LIMIT_REQUEST_SCHEMA = openapi.Schema(
     }
 )
 
-
 def _serialize_limit(limit_param):
     fp = limit_param.formula_param
 
@@ -2300,6 +2451,7 @@ def _serialize_limit(limit_param):
         'type': 'universal' if is_universal else 'byRoom',
         'universalValue': float(ulp.value) if is_universal else None,
         'cryteria_id':fp.cryteria_id_id,
+        'isActive': fp.is_active,
         'roomValues': []
     }
 
@@ -2310,7 +2462,6 @@ def _serialize_limit(limit_param):
         })
 
     return base
-
 
 class LimitParamListView(BaseAPIView):
     @swagger_auto_schema(
@@ -2350,7 +2501,8 @@ class LimitParamListView(BaseAPIView):
             fp = FormulaParam.objects.create(
                 name=data['symbol'],
                 label=data.get('label', ''),
-                cryteria_id_id=cryteria_id if cryteria_id != 0 else None
+                cryteria_id_id=cryteria_id if cryteria_id != 0 else None,
+                is_active=data.get('isActive', False)
             )
 
             # 2. Создаем LimitParam
@@ -2358,9 +2510,9 @@ class LimitParamListView(BaseAPIView):
 
             # 3. Создаем значения
             if limit_type == 'universal':
-                val = data.get('universal_value')
+                val = data.get('universalValue')
                 if val is None: 
-                    return Response({'error': 'Укажите universal_value'}, status=400)
+                    return Response({'error': 'Укажите universalValue'}, status=400)
                 UniversalLimitParam.objects.create(limit_param=lp, value=float(val))
             else:
                 room_vals = data.get('roomValues', [])
@@ -2374,7 +2526,6 @@ class LimitParamListView(BaseAPIView):
             return Response(_serialize_limit(lp), status=201)
         except Exception as e:
             return Response({'error': str(e)}, status=500)
-
 
 class LimitParamDetailView(BaseAPIView):
     def _get_limit(self, pk):
@@ -2415,6 +2566,7 @@ class LimitParamDetailView(BaseAPIView):
             fp.name = data.get('symbol', fp.name)
             fp.label = data.get('label', fp.label)
             fp.cryteria_id_id = data.get('cryteria_id', fp.cryteria_id_id)
+            fp.is_active = data.get('isActive', fp.is_active)
             fp.save()
             lp.universallimitparam_set.all().delete()
             lp.roomslimitparam_set.all().delete()
@@ -2445,24 +2597,18 @@ class LimitParamDetailView(BaseAPIView):
         except Exception as e:
             return Response({'error': str(e)}, status=500)
 
-
-
-# ==========================================
-#  SCHEMAS
-# ==========================================
 FORMULA_ITEM_SCHEMA = openapi.Schema(
     type=openapi.TYPE_OBJECT,
     properties={
         'id': openapi.Schema(type=openapi.TYPE_INTEGER),
         'objType': openapi.Schema(type=openapi.TYPE_STRING, enum=['single', 'system']),
         'criterion_id': openapi.Schema(type=openapi.TYPE_INTEGER),  
+        'type': openapi.Schema(type=openapi.TYPE_STRING, enum=['global', 'rooms']),  # ✅ Единое поле для обоих типов
         # --- Для objType: single ---
         'equation': openapi.Schema(type=openapi.TYPE_STRING),
-        'type': openapi.Schema(type=openapi.TYPE_STRING, enum=['global', 'rooms']),
         'recommendation': openapi.Schema(type=openapi.TYPE_STRING),
         'value_recomm': openapi.Schema(type=openapi.TYPE_NUMBER, format='float'),
         # --- Для objType: system ---
-        'systemType': openapi.Schema(type=openapi.TYPE_STRING, enum=['house', 'rooms']),
         'equations': openapi.Schema(
             type=openapi.TYPE_ARRAY,
             items=openapi.Schema(
@@ -2475,10 +2621,22 @@ FORMULA_ITEM_SCHEMA = openapi.Schema(
             )
         ),
         # --- Общие ссылки ---
-        'for_room_types_ids': openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Schema(type=openapi.TYPE_INTEGER)),
-        'used_input_ids': openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Schema(type=openapi.TYPE_INTEGER)),
-        'used_acp_ids': openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Schema(type=openapi.TYPE_INTEGER)),
-        'used_limit_ids': openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Schema(type=openapi.TYPE_INTEGER)),
+        'for_room_types_ids': openapi.Schema(
+            type=openapi.TYPE_ARRAY, 
+            items=openapi.Schema(type=openapi.TYPE_INTEGER)
+        ),
+        'used_input_ids': openapi.Schema(
+            type=openapi.TYPE_ARRAY, 
+            items=openapi.Schema(type=openapi.TYPE_INTEGER)
+        ),
+        'used_acp_ids': openapi.Schema(
+            type=openapi.TYPE_ARRAY, 
+            items=openapi.Schema(type=openapi.TYPE_INTEGER)
+        ),
+        'used_limit_ids': openapi.Schema(
+            type=openapi.TYPE_ARRAY, 
+            items=openapi.Schema(type=openapi.TYPE_INTEGER)
+        ),
     }
 )
 
@@ -2492,7 +2650,6 @@ FORMULA_REQUEST_SCHEMA = openapi.Schema(
         'type': openapi.Schema(type=openapi.TYPE_STRING, enum=['global', 'rooms']),
         'recommendation': openapi.Schema(type=openapi.TYPE_STRING),
         'value_recomm': openapi.Schema(type=openapi.TYPE_NUMBER),
-        'systemType': openapi.Schema(type=openapi.TYPE_STRING, enum=['house', 'rooms']),
         'equations': openapi.Schema(
             type=openapi.TYPE_ARRAY,
             items=openapi.Schema(
@@ -2516,6 +2673,8 @@ def _serialize_common_formula(cf):
     return {
         'id': cf.id,
         'objType': 'single',
+        'name': cf.name or '',  
+        'isActive': cf.is_active, 
         'criterion_id': cf.criterion_id,
         'equation': cf.formula.equation,
         'type': cf.type,
@@ -2527,35 +2686,64 @@ def _serialize_common_formula(cf):
     }
 
 def _serialize_system(sys_obj):
-    # Параметры системы
-    input_ids = list(SystemEquastionUserInputParam.objects.filter(sys_equ=sys_obj).values_list('useR_input_param_id', flat=True))
-    acp_ids = list(SystemEquastionUserACP.objects.filter(sys_equ=sys_obj).values_list('acp_id', flat=True))
-    lim_ids=[]
-    room_type_ids=[]
-    if(sys_obj.type == 'rooms'):
-        lim_ids = list(SystemEquastionRoomsLimitParam.objects.filter(system_equastion=sys_obj).values_list('rooms_limit_param_id', flat=True))
-        room_type_ids = list(SysEquastRoomType.objects.filter(system_equastion=sys_obj).values_list('room_type_id',flat=True))
-    else:
-        lim_ids = list(SystemEquastionUniversalLimitParam.objects.filter(system_equastion=sys_obj).values_list('universal_limit_param_id', flat=True))
-    equastions = []
-    # Универсальные уравнения
-    for ueq in EquastionOfSystemEquastion.objects.filter(system_equastion=sys_obj):
-        equastions.append({
-            'limit_equastion': ueq.limit_equastion,
-            'equastion': ueq.formula.equation.strip(),
-            'recommendation': ueq.recommendation,
+    """Сериализация системы уравнений"""
+    
+    # Собираем все лимиты (и universal, и rooms)
+    limit_ids = []
+    
+    # Universal-лимиты
+    universal_links = SystemEquastionUniversalLimitParam.objects.filter(
+        sys_equastion=sys_obj
+    ).values_list('universal_limit_param__limit_param_id', flat=True)
+    limit_ids.extend(list(universal_links))
+    
+    # Rooms-лимиты
+    rooms_links = SystemEquastionRoomsLimitParam.objects.filter(
+        system_equastion=sys_obj
+    ).values_list('rooms_limit_param__limit_param_id', flat=True)
+    limit_ids.extend(list(rooms_links))
+    
+    # Убираем дубликаты
+    limit_ids = list(set(limit_ids))
+    
+    # Собираем уравнения
+    equations = []
+    for eq_link in EquastionOfSystemEquastion.objects.filter(system_equastion=sys_obj).select_related('formula'):
+        equations.append({
+            'limit_equastion': eq_link.limit_equastion,
+            'equastion': eq_link.formula.equation,
+            'recommendation': eq_link.recommendation
         })
-
+    
+    # Собираем комнаты
+    room_type_ids = list(
+        SysEquastRoomType.objects.filter(system_equastion=sys_obj)
+        .values_list('room_type_id', flat=True)
+    )
+    
+    # ✅ ИСПРАВЛЕНО: правильные related_name и имена полей
+    # Модель: SystemEquastionUserInputParam, поле: useR_input_param
+    input_ids = list(
+        sys_obj.systemequastionuserinputparam_set.values_list('useR_input_param_id', flat=True)
+    )
+    
+    # Модель: SystemEquastionUserACP, поле: acp
+    acp_ids = list(
+        sys_obj.systemequastionuseracp_set.values_list('acp_id', flat=True)
+    )
+    
     return {
         'id': sys_obj.id,
         'objType': 'system',
-        'systemType':sys_obj.type,
-        'equations': equastions,
+        'name': sys_obj.name or '',
+        'isActive': sys_obj.is_active, 
+        'type': sys_obj.type,
         'criterion_id': sys_obj.criterion_id,
+        'equations': equations,
+        'for_room_types_ids': room_type_ids,
         'used_input_ids': input_ids,
         'used_acp_ids': acp_ids,
-        'used_limit_ids':lim_ids,
-        'for_room_types_ids':room_type_ids
+        'used_limit_ids': limit_ids,
     }
 
 
@@ -2601,7 +2789,7 @@ class FormulaListView(BaseAPIView):
                 'equastionofsystemequastion_set__formula',
                 'systemequastionroomslimitparam_set',
                 'systemequastionuniversallimitparam_set',
-                'syueqastroomtype_set'  # ⚠️ Проверьте, что это имя related_name верное!
+                'sysequastroomtype_set' 
             )
             
             # ✅ Фильтрация только если criterion_id передан и валиден
@@ -2624,6 +2812,7 @@ class FormulaListView(BaseAPIView):
             logging.error(f"❌ FormulaListView GET error: {str(e)}\n{traceback.format_exc()}")
             return Response({'error': str(e)}, status=500)
 
+
     @swagger_auto_schema(operation_summary="Создание формулы или системы", request_body=FORMULA_REQUEST_SCHEMA, responses={201: FORMULA_ITEM_SCHEMA})
     def post(self, request):
         try:
@@ -2638,11 +2827,15 @@ class FormulaListView(BaseAPIView):
             acp_ids = data.get('used_acp_ids', []) or []
 
             if obj_type == 'single':
-                if not data.get('equation'): return Response({'error': 'Укажите equation'}, status=400)
+                if not data.get('equation'): 
+                    return Response({'error': 'Укажите equation'}, status=400)
                 fp = Formula.objects.create(equation=data['equation'])
                 cf = CommonFormula.objects.create(
                     formula=fp, type=f_type, criterion_id=criterion_id,
-                    recommendation=data.get('recommendation'), value_recomm=data.get('value_recomm')
+                    recommendation=data.get('recommendation'), 
+                    value_recomm=data.get('value_recomm'),
+                    name=data.get('name', ''),
+                    is_active=data.get('isActive', False),
                 )
                 if f_type == 'rooms' and data.get('for_room_types_ids'):
                     CommonFormulaRoomTypes.objects.bulk_create([
@@ -2652,50 +2845,75 @@ class FormulaListView(BaseAPIView):
                 _create_param_links(cf, input_ids, acp_ids, is_system=False)
                 return Response(_serialize_common_formula(cf), status=201)
 
-            else:
+            else:  # system
                 equations = data.get('equations', [])
-                if not equations: return Response({'error': 'Добавьте хотя бы одно уравнение'}, status=400)
+                if not equations: 
+                    return Response({'error': 'Добавьте хотя бы одно уравнение'}, status=400)
                 
-                sys_type = data.get('systemType', 'house')
-                sys_obj = SystemEquastion.objects.create(type=sys_type, criterion_id=criterion_id)
+                sys_type = data.get('type', 'house')
+                sys_obj = SystemEquastion.objects.create(type=sys_type, 
+                criterion_id=criterion_id,
+                name=data.get('name', ''),
+                is_active=data.get('isActive', False))
                 _create_param_links(sys_obj, input_ids, acp_ids, is_system=True)
 
                 for eq in equations:
-                    eq_str = f"{eq.get('left', '')} = {eq.get('right', '')}".strip()
-                    formula = Formula.objects.create(equation=eq_str)
+                    # ✅ ИСПРАВЛЕНО: в Formula.equation попадает только правая часть (equastion)
+                    formula = Formula.objects.create(equation=eq.get('equastion', ''))
                     EquastionOfSystemEquastion.objects.create(
                         system_equastion=sys_obj,
                         formula=formula,
-                        limit_equastion=eq.get('left', ''),
+                        limit_equastion=eq.get('limit_equastion', ''),
                         recommendation=eq.get('recommendation', '')
                     )
 
                 limit_ids = data.get('used_limit_ids', []) or []
                 room_type_ids = data.get('for_room_types_ids', []) or []
 
-                if sys_type == 'rooms':
-                    if limit_ids:
+                # ✅ БЕЗОПАСНЫЙ МАППИНГ ЛИМИТОВ: избегаем IntegrityError
+                if limit_ids:
+                    if sys_type == 'rooms':
+                    # Ищем RoomsLimitParam по limit_param_id
+                        room_limits = RoomsLimitParam.objects.filter(limit_param_id__in=limit_ids).select_related('limit_param')
+                        
+                        # Проверка: все ли переданные лимиты найдены?
+                        found_ids = {rl.limit_param_id for rl in room_limits}
+                        missing = set(limit_ids) - found_ids
+                        if missing:
+                            return Response({
+                                'error': f'Не найдены ограничения по комнатам для ID: {list(missing)}'
+                            }, status=400)
+                        
+                        # Создаём связи, используя найденные RoomsLimitParam
                         SystemEquastionRoomsLimitParam.objects.bulk_create([
-                            SystemEquastionRoomsLimitParam(system_equastion=sys_obj, rooms_limit_param_id=lim_id) 
-                            for lim_id in limit_ids
+                            SystemEquastionRoomsLimitParam(system_equastion=sys_obj, rooms_limit_param=rl) 
+                            for rl in room_limits
                         ])
-                    if room_type_ids:
-                        SysEquastRoomType.objects.bulk_create([
-                            SysEquastRoomType(system_equastion=sys_obj, room_type_id=rid) 
-                            for rid in room_type_ids
-                        ])
-                else:
-                    if limit_ids:
+                    
+                    else:  # house
+                        universal_limits = UniversalLimitParam.objects.filter(limit_param_id__in=limit_ids).select_related('limit_param')
+                        
+                        found_ids = {ul.limit_param_id for ul in universal_limits}
+                        missing = set(limit_ids) - found_ids
+                        if missing:
+                            return Response({
+                                'error': f'Не найдены универсальные ограничения для ID: {list(missing)}'
+                            }, status=400)
+                        
                         SystemEquastionUniversalLimitParam.objects.bulk_create([
-                            SystemEquastionUniversalLimitParam(sys_equastion=sys_obj, universal_limit_param_id=lim_id) 
-                            for lim_id in limit_ids
+                            SystemEquastionUniversalLimitParam(sys_equastion=sys_obj, universal_limit_param=ul) 
+                            for ul in universal_limits
                         ])
+
+                if sys_type == 'rooms' and room_type_ids:
+                    SysEquastRoomType.objects.bulk_create([
+                        SysEquastRoomType(system_equastion=sys_obj, room_type_id=rid) 
+                        for rid in room_type_ids
+                    ])
 
                 return Response(_serialize_system(sys_obj), status=201)
         except Exception as e:
             return Response({'error': str(e)}, status=500)
-
-
 
 class FormulaDetailView(BaseAPIView):
     def _get_obj(self, pk, obj_type):
@@ -2724,105 +2942,1487 @@ class FormulaDetailView(BaseAPIView):
             input_ids = data.get('used_input_ids', []) or []
             acp_ids = data.get('used_acp_ids', []) or []
 
+            # ✅ Валидация для rooms
+            if f_type == 'rooms' and not data.get('for_room_types_ids'):
+                return Response({'error': 'for_room_types_ids обязателен при type=rooms'}, status=400)
+
             if obj_type == 'single':
                 cf = self._get_obj(pk, 'single')
-                if not cf: return Response({'error': 'Не найдено'}, status=404)
+                if not cf: 
+                    return Response({'error': 'Не найдено'}, status=404)
                 
+                # ✅ Полная очистка старых связей
+                cf.commonformularoomtypes_set.all().delete()
+                _delete_param_links(cf, is_system=False)
+                
+                # 📝 Обновление формулы
                 cf.formula.equation = data.get('equation', cf.formula.equation)
                 cf.formula.save()
+                
                 cf.type = f_type
                 cf.criterion_id = criterion_id
                 cf.recommendation = data.get('recommendation', cf.recommendation)
                 cf.value_recomm = data.get('value_recomm', cf.value_recomm)
+                cf.name = data.get('name', cf.name)             
+                cf.is_active = data.get('isActive', cf.is_active)
                 cf.save()
 
-                cf.commonformularoomtypes_set.all().delete()
+                # 🔗 Создание новых связей только если type == 'rooms'
                 if f_type == 'rooms' and data.get('for_room_types_ids'):
                     CommonFormulaRoomTypes.objects.bulk_create([
-                        CommonFormulaRoomTypes(commonformula=cf, roomtype_id=rid) for rid in data['for_room_types_ids']
+                        CommonFormulaRoomTypes(commonformula=cf, roomtype_id=rid) 
+                        for rid in data['for_room_types_ids']
                     ])
-                _delete_param_links(cf, is_system=False)
+                
                 _create_param_links(cf, input_ids, acp_ids, is_system=False)
                 return Response(_serialize_common_formula(cf), status=200)
 
-            else:
+            else:  # system
                 sys_obj = self._get_obj(pk, 'system')
-                if not sys_obj: return Response({'error': 'Не найдено'}, status=404)
+                if not sys_obj: 
+                    return Response({'error': 'Не найдено'}, status=404)
                 
-                sys_type = data.get('systemType', sys_obj.type)
-                sys_obj.type = sys_type
-                sys_obj.criterion_id = criterion_id
-                sys_obj.save()
-
+                sys_type = data.get('type', sys_obj.type)
+                
+                # ✅ Полная очистка ВСЕХ старых связей
                 EquastionOfSystemEquastion.objects.filter(system_equastion=sys_obj).delete()
                 SystemEquastionRoomsLimitParam.objects.filter(system_equastion=sys_obj).delete()
                 SystemEquastionUniversalLimitParam.objects.filter(sys_equastion=sys_obj).delete()
                 SysEquastRoomType.objects.filter(system_equastion=sys_obj).delete()
                 _delete_param_links(sys_obj, is_system=True)
                 
-                _create_param_links(sys_obj, input_ids, acp_ids, is_system=True)
-                equations = data.get('equations', [])
+                # 📝 Обновление системы
+                sys_obj.type = sys_type
+                sys_obj.criterion_id = criterion_id
+                sys_obj.name = data.get('name', sys_obj.name)         
+                sys_obj.is_active = data.get('isActive', sys_obj.is_active)
+                sys_obj.save()
 
+                # 📝 Создание новых уравнений
+                equations = data.get('equations', [])
+                if not equations:
+                    return Response({'error': 'equations не может быть пустым для system'}, status=400)
+                
                 for eq in equations:
-                    eq_str = f"{eq.get('left', '')} = {eq.get('right', '')}".strip()
-                    formula = Formula.objects.create(equation=eq_str)
+                    formula = Formula.objects.create(equation=eq.get('equastion', ''))
                     EquastionOfSystemEquastion.objects.create(
                         system_equastion=sys_obj,
                         formula=formula,
-                        limit_equastion=eq.get('left', ''),
+                        limit_equastion=eq.get('limit_equastion', ''),
                         recommendation=eq.get('recommendation', '')
                     )
 
+                # ✅ ДОБАВЛЕНО: Создание связей input/acp параметров
+                _create_param_links(sys_obj, input_ids, acp_ids, is_system=True)
+
+                # 🔗 Обработка лимитов
+                                # 🔗 Обработка лимитов — СТРОГО по типу системы
                 limit_ids = data.get('used_limit_ids', []) or []
                 room_type_ids = data.get('for_room_types_ids', []) or []
 
-                if sys_type == 'rooms':
-                    if limit_ids:
-                        SystemEquastionRoomsLimitParam.objects.bulk_create([
-                            SystemEquastionRoomsLimitParam(system_equastion=sys_obj, rooms_limit_param_id=lim_id) 
-                            for lim_id in limit_ids
-                        ])
-                    if room_type_ids:
-                        SysEquastRoomType.objects.bulk_create([
-                            SysEquastRoomType(system_equastion=sys_obj, room_type_id=rid) 
-                            for rid in room_type_ids
-                        ])
-                else:
-                    if limit_ids:
-                        SystemEquastionUniversalLimitParam.objects.bulk_create([
-                            SystemEquastionUniversalLimitParam(sys_equastion=sys_obj, universal_limit_param_id=lim_id) 
-                            for lim_id in limit_ids
-                        ])
-                        
+                if limit_ids:
+                    if sys_type == 'rooms':
+                        # ✅ Для rooms: сохраняем ТОЛЬКО rooms-лимиты
+                        rooms_valid_ids = list(
+                            RoomsLimitParam.objects
+                            .filter(limit_param_id__in=limit_ids)
+                            .values_list('id', flat=True)
+                        )
+                        if rooms_valid_ids:
+                            SystemEquastionRoomsLimitParam.objects.bulk_create([
+                                SystemEquastionRoomsLimitParam(
+                                    system_equastion=sys_obj, 
+                                    rooms_limit_param_id=rid
+                                ) 
+                                for rid in rooms_valid_ids
+                            ])
+                        # Universal-лимиты НЕ сохраняем для rooms
+                            
+                    else:  # global — ТОЛЬКО universal
+                        universal_valid_ids = list(
+                            UniversalLimitParam.objects
+                            .filter(limit_param_id__in=limit_ids)
+                            .values_list('id', flat=True)
+                        )
+                        if universal_valid_ids:
+                            SystemEquastionUniversalLimitParam.objects.bulk_create([
+                                SystemEquastionUniversalLimitParam(
+                                    sys_equastion=sys_obj, 
+                                    universal_limit_param_id=uid
+                                ) 
+                                for uid in universal_valid_ids
+                            ])
+
+                # 🔗 Комнатные связи только для rooms
+                if sys_type == 'rooms' and room_type_ids:
+                    SysEquastRoomType.objects.bulk_create([
+                        SysEquastRoomType(system_equastion=sys_obj, room_type_id=rid) 
+                        for rid in room_type_ids
+                    ])
+                                                    
                 return Response(_serialize_system(sys_obj), status=200)
+                
         except Exception as e:
             return Response({'error': str(e)}, status=500)
     def delete(self, request, pk):
+        """
+        Корректное удаление формулы или системы уравнений с очисткой ВСЕХ связанных записей.
+        Порядок важен: сначала дочерние связи, потом родительские объекты.
+        """
         try:
+            # ==================== УДАЛЕНИЕ ОДИНОЧНОЙ ФОРМУЛЫ ====================
             obj = self._get_obj(pk, 'single')
             if obj:
+                # obj — это экземпляр CommonFormula
+                
+                # 1. Удаляем связи с параметрами (через вспомогательную функцию)
                 _delete_param_links(obj, is_system=False)
-                fid = obj.formula_id
-                obj.commonformularoomtypes_set.all().delete()
+                
+                # 2. Удаляем связи с типами комнат
+                CommonFormulaRoomTypes.objects.filter(commonformula=obj).delete()
+                
+                # 3. Сохраняем ID формулы для удаления после удаления объекта
+                formula_id = obj.formula_id
+                
+                # 4. Удаляем саму запись CommonFormula
                 obj.delete()
-                Formula.objects.filter(id=fid).delete()
+                
+                # 5. Удаляем базовую формулу, если она больше не используется
+                #    (проверяем, нет ли других ссылок на неё)
+                if formula_id and not Formula.objects.filter(
+                    id=formula_id
+                ).exclude(  # Исключаем текущую, если она ещё не удалена
+                    commonformula__isnull=False,
+                    equastionofsystemequastion__isnull=False
+                ).exists():
+                    Formula.objects.filter(id=formula_id).delete()
+                
                 return Response(status=204)
             
             obj = self._get_obj(pk, 'system')
             if obj:
-                # Удаление уравнений и связанных формул
-                for ueq in EquastionOfSystemEquastion.objects.filter(system_equastion=obj).select_related('formula'):
-                    ueq.formula.delete()
+                # obj — это экземпляр SystemEquastion
+                
+                # 1. Удаляем уравнения системы и их формулы
+                #    Сначала удаляем формулы, привязанные к уравнениям
+                equation_ids = list(EquastionOfSystemEquastion.objects.filter(
+                    system_equastion=obj
+                ).values_list('formula_id', flat=True))
+                
+                # Удаляем связи уравнений с системой
                 EquastionOfSystemEquastion.objects.filter(system_equastion=obj).delete()
                 
-                # Очистка связей
-                _delete_param_links(obj, is_system=True)
+                # Удаляем сами формулы, если они не используются в других местах
+                for fid in equation_ids:
+                    if fid and not Formula.objects.filter(
+                        id=fid
+                    ).exclude(
+                        commonformula__isnull=False,
+                        equastionofsystemequastion__isnull=False
+                    ).exists():
+                        Formula.objects.filter(id=fid).delete()
+                
+                # 2. Удаляем связи с параметрами пользовательского ввода
+                SystemEquastionUserInputParam.objects.filter(sys_equ=obj).delete()
+                
+                # 3. Удаляем связи с параметрами автоподсчёта
+                SystemEquastionUserACP.objects.filter(sys_equ=obj).delete()
+                
+                # 4. Удаляем связи с универсальными ограничениями ⭐ ИСПРАВЛЕНО
+                SystemEquastionUniversalLimitParam.objects.filter(sys_equastion=obj).delete()
+                
+                # 5. Удаляем связи с ограничениями по комнатам ⭐ ИСПРАВЛЕНО
                 SystemEquastionRoomsLimitParam.objects.filter(system_equastion=obj).delete()
-                SystemEquastionUniversalLimitParam.objects.filter(system_equastion=obj).delete()
+                
+                # 6. Удаляем связи с типами комнат
                 SysEquastRoomType.objects.filter(system_equastion=obj).delete()
                 
+                # 7. Удаляем саму систему уравнений
                 obj.delete()
+                
                 return Response(status=204)
-            return Response({'error': 'Не найдено'}, status=404)
+            
+            # Если объект не найден ни в одном из типов
+            return Response({'error': 'Формула или система не найдена'}, status=404)
+            
+        except Exception as e:
+            import logging
+            logging.error(f'❌ Ошибка при удалении формулы {pk}: {str(e)}', exc_info=True)
+            return Response({'error': f'Внутренняя ошибка сервера: {str(e)}'}, status=500)
+
+CRITERION_ITEM_SCHEMA = openapi.Schema(
+    type=openapi.TYPE_OBJECT,
+    properties={
+        'id': openapi.Schema(type=openapi.TYPE_INTEGER),
+        'name': openapi.Schema(type=openapi.TYPE_STRING),
+        'color':openapi.Schema(type=openapi.TYPE_STRING),
+        'parameters': openapi.Schema(
+            type=openapi.TYPE_ARRAY,
+            items=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    'id': openapi.Schema(type=openapi.TYPE_INTEGER),
+                    'name': openapi.Schema(type=openapi.TYPE_STRING),
+                    'label': openapi.Schema(type=openapi.TYPE_STRING),
+                    'input_type': openapi.Schema(type=openapi.TYPE_STRING, enum=['global', 'rooms']),
+                    'min_value': openapi.Schema(type=openapi.TYPE_NUMBER),
+                    'max_value': openapi.Schema(type=openapi.TYPE_NUMBER),
+                    'room_type_ids': openapi.Schema(
+                        type=openapi.TYPE_ARRAY, 
+                        items=openapi.Schema(type=openapi.TYPE_INTEGER),
+                        description='Заполняется только если input_type == rooms'
+                    ),
+                }
+            )
+        ),
+        'questions': openapi.Schema(
+            type=openapi.TYPE_ARRAY,
+            items=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    'id': openapi.Schema(type=openapi.TYPE_INTEGER),
+                    'question': openapi.Schema(type=openapi.TYPE_STRING),
+                    'recommendation': openapi.Schema(type=openapi.TYPE_STRING),
+                    'score_for_recommendation': openapi.Schema(type=openapi.TYPE_NUMBER),
+                    'type': openapi.Schema(type=openapi.TYPE_STRING),
+                    'room_type_ids': openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        items=openapi.Schema(type=openapi.TYPE_INTEGER),
+                        description='ID типов комнат (если вопрос привязан к конкретным комнатам)'
+                    ),
+                    'answers': openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        items=openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                'id': openapi.Schema(type=openapi.TYPE_INTEGER),
+                                'answer': openapi.Schema(type=openapi.TYPE_STRING),
+                                'score': openapi.Schema(type=openapi.TYPE_NUMBER),
+                            }
+                        )
+                    )
+                }
+            )
+        ),
+    }
+)
+
+class ActiveCriterionListView(BaseAPIView):
+    @swagger_auto_schema(
+        operation_summary="Список активных критериев с параметрами",
+        responses={200: openapi.Response('Успех')}
+    )
+    def get(self, request):
+        try:
+            # ==========================================
+            # 1. СБОР ОБЩИХ (ГЛОБАЛЬНЫХ) ПАРАМЕТРОВ
+            # ==========================================
+            # Ищем FormulaParam, которые НЕ привязаны ни к одному критерию (cryteria_id is NULL)
+            global_fps = FormulaParam.objects.filter(
+                cryteria_id__isnull=True
+            ).prefetch_related(
+                'userinputparam_set__userinputparamroomtype_set__room_type'
+            )
+
+            global_parameters = []
+            for fp in global_fps:
+                for uip in fp.userinputparam_set.all():
+                    global_parameters.append({
+                        'id': uip.id,
+                        'name': fp.name,
+                        'label': fp.label or fp.name,
+                        'input_type': uip.type,
+                        'min_value': uip.min_value,
+                        'max_value': uip.max_value,
+                        'room_type_ids': [
+                            rel.room_type.id 
+                            for rel in uip.userinputparamroomtype_set.all()
+                        ],
+                        'is_global': True  # 👈 Флаг для фронтенда, чтобы отличать их
+                    })
+
+            # ==========================================
+            # 2. СБОР КРИТЕРИЕВ И ИХ ПАРАМЕТРОВ
+            # ==========================================
+            criteria = Criterion_of_ergonomy.objects.filter(
+                is_active=True
+            ).prefetch_related(
+                'formulaparam_set__userinputparam_set__userinputparamroomtype_set__room_type',
+                'form_question_set__formanswer_set',
+                'form_question_set__form_question_roomtype_set__room_type_id'
+            )
+
+            criteria_result = []
+            
+            for crit in criteria:
+                # --- СБОР ПАРАМЕТРОВ КОНКРЕТНОГО КРИТЕРИЯ ---
+                parameters = []
+                for fp in crit.formulaparam_set.all():
+                    for uip in fp.userinputparam_set.all():
+                        parameters.append({
+                            'id': uip.id,
+                            'name': fp.name,
+                            'label': fp.label or fp.name,
+                            'input_type': uip.type,
+                            'min_value': uip.min_value,
+                            'max_value': uip.max_value,
+                            'room_type_ids': [
+                                rel.room_type.id 
+                                for rel in uip.userinputparamroomtype_set.all()
+                            ],
+                            'is_global': False # 👈 Явно указываем, что это параметр критерия
+                        })
+
+                # --- СБОР ВОПРОСОВ ---
+                questions = []
+                for q in crit.form_question_set.all():
+                    if not q.is_active:
+                        continue
+                        
+                    questions.append({
+                        'id': q.id,
+                        'question': q.question,
+                        'recommendation': q.recommendation,
+                        'score_for_recommendation': q.score_for_recommendation,
+                        'type': q.type,
+                        'room_type_ids': [
+                            rel.room_type_id.id 
+                            for rel in q.form_question_roomtype_set.all()
+                        ],
+                        'answers': [
+                            {
+                                'id': ans.id,
+                                'answer': ans.answer,
+                                'score': ans.score
+                            }
+                            for ans in q.formanswer_set.all()
+                        ]
+                    })
+
+                criteria_result.append({
+                    'id': crit.id,
+                    'color': crit.color,
+                    'name': crit.name,
+                    'parameters': parameters,
+                    'questions': questions,
+                })
+
+            # ==========================================
+            # 3. ФОРМИРОВАНИЕ ИТОГОВОГО ОТВЕТА
+            # ==========================================
+            return Response({
+                'global_parameters': global_parameters,
+                'criteria': criteria_result
+            }, status=200)
+
+        except Exception as e:
+            import logging, traceback
+            logging.error(f"❌ ActiveCriterionListView GET error: {str(e)}\n{traceback.format_exc()}")
+            return Response({'error': 'Внутренняя ошибка сервера', 'details': str(e)}, status=500)
+
+class TestView(BaseAPIView):
+    @swagger_auto_schema(
+        operation_summary="Вызов специального метода по ID",
+        manual_parameters=[
+            openapi.Parameter('room_type_id', openapi.IN_QUERY, description="ID типа комнаты (если требуется методом)", type=openapi.TYPE_INTEGER),
+            openapi.Parameter('furniture_type_id', openapi.IN_QUERY, description="ID типа мебели (если требуется методом)", type=openapi.TYPE_INTEGER),
+        ],
+        responses={
+            200: openapi.Response('Успех'),
+            404: openapi.Response('Метод или план не найдены'),
+            500: openapi.Response('Ошибка выполнения')
+        }
+    )
+    def get(self, request, id: int = None, floorplan_id: int = None):
+        # ─ 0. Определяем, откуда брать метод: из БД (по id) или по имени напрямую ──
+        method_name = None
+        input_type = None
+
+        if id is not None:
+            # Режим 1: через запись в БД
+            try:
+                special_method = AutoCountingMethod.objects.get(id=id)
+            except AutoCountingMethod.DoesNotExist:
+                return Response(
+                    {"error": f"SpecialMethod с id={id} не найден"},
+                    status=404
+                )
+            method_name = special_method.name
+            input_type = special_method.inputType
+        # ── 1. Находим класс метода в модуле special_methods ──
+        try:
+            method_class = getattr(special_methods, method_name)
+        except AttributeError:
+            return Response(
+                {"error": f"Класс '{method_name}' не найден в модуле special_methods"},
+                status=404
+            )
+
+        # ── 2. Инстанциируем ──
+        try:
+            instance = method_class()
+        except TypeError as e:
+            return Response(
+                {"error": f"Не удалось создать экземпляр '{method_name}': {str(e)}"},
+                status=500
+            )
+
+        # ── 3. Вызываем get(...) с нужными аргументами ──
+        try:
+            if input_type == 'nothing':
+                result = instance.get(floorplan_id=floorplan_id)
+
+            elif input_type == 'rooms':
+                room_type_id = request.query_params.get('room_type_id')
+                if not room_type_id:
+                    return Response(
+                        {"error": "Для input_type='rooms' необходим параметр room_type_id"},
+                        status=400
+                    )
+                result = instance.get(
+                    floorplan_id=floorplan_id,
+                    room_type_id=int(room_type_id)
+                )
+
+            elif input_type == 'furniture':
+                furniture_type_id = request.query_params.get('furniture_type_id')
+                if not furniture_type_id:
+                    return Response(
+                        {"error": "Для input_type='furniture' необходим параметр furniture_type_id"},
+                        status=400
+                    )
+                result = instance.get(
+                    floorplan_id=floorplan_id,
+                    furniture_type_id=int(furniture_type_id)
+                )
+
+            elif input_type == 'roomsfurniture':
+                room_type_id = request.query_params.get('room_type_id')
+                furniture_type_id = request.query_params.get('furniture_type_id')
+                if not room_type_id or not furniture_type_id:
+                    return Response(
+                        {"error": "Для input_type='roomsfurniture' нужны room_type_id и furniture_type_id"},
+                        status=400
+                    )
+                result = instance.get(
+                    floorplan_id=floorplan_id,
+                    room_type_id=int(room_type_id),
+                    furniture_type_id=int(furniture_type_id)
+                )
+            else:
+                return Response(
+                    {"error": f"Неизвестный input_type: {input_type}"},
+                    status=400
+                )
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return Response(
+                {"error": f"Ошибка при выполнении метода '{method_name}': {str(e)}"},
+                status=500
+            )
+
+        # ── 4. Сериализация результата ──
+        # Поддерживаем оба формата: старый (VoidMethodResult) и новый (SpecialMethodResult)
+        if hasattr(result, 'parameter_name'):
+            # Новый формат: SpecialMethodResult
+            result_dict = dataclasses.asdict(result)
+            # Дополнительно добавим мета-информацию для удобства отладки
+            result_dict['_meta'] = {
+                'method_name': method_name,
+                'input_type': input_type,
+                'floorplan_id': floorplan_id,
+                'recommendations_count': len(result_dict.get('recommendations', [])),
+            }
+        else:
+            # Старый формат (VoidMethodResult, RoomsMethodResult и т.д.)
+            result_dict = dataclasses.asdict(result)
+            result_dict['_meta'] = {
+                'method_name': method_name,
+                'input_type': input_type,
+                'floorplan_id': floorplan_id,
+            }
+
+        return Response(result_dict, status=200)
+
+
+AUTO_COUNTING_METHOD_SCHEMA = openapi.Schema(
+    type=openapi.TYPE_OBJECT,
+    properties={
+        'id': openapi.Schema(type=openapi.TYPE_INTEGER),
+        'name': openapi.Schema(type=openapi.TYPE_STRING),
+        'label': openapi.Schema(type=openapi.TYPE_STRING),
+        'inputType': openapi.Schema(type=openapi.TYPE_STRING),
+    }
+)
+
+
+class AutoCountingMethodListView(BaseAPIView):
+    """Список всех методов автоподсчёта (справочник)."""
+    @swagger_auto_schema(
+        operation_summary="Список всех методов автоподсчёта",
+        responses={200: openapi.Response(
+            description='Список',
+            schema=openapi.Schema(type=openapi.TYPE_ARRAY, items=AUTO_COUNTING_METHOD_SCHEMA)
+        )}
+    )
+    def get(self, request):
+        methods = AutoCountingMethod.objects.all().order_by('id')
+        data = [
+            {
+                'id': m.id,
+                'name': m.name,
+                'label': m.label,
+                'inputType': m.inputType,
+            }
+            for m in methods
+        ]
+        return Response(data, status=200)
+
+
+class CriterionMethodsView(BaseAPIView):
+    """Получение и назначение методов автоподсчёта для конкретного критерия."""
+
+    @swagger_auto_schema(
+        operation_summary="Методы автоподсчёта, назначенные критерию",
+        manual_parameters=[
+            openapi.Parameter('criterion_id', openapi.IN_PATH,
+                              type=openapi.TYPE_INTEGER, required=True)
+        ],
+        responses={
+            200: openapi.Schema(
+                type=openapi.TYPE_ARRAY,
+                items=openapi.Schema(type=openapi.TYPE_INTEGER)
+            ),
+            404: 'Критерий не найден',
+        }
+    )
+    def get(self, request, criterion_id):
+        try:
+            Criterion_of_ergonomy.objects.get(id=criterion_id)
+        except Criterion_of_ergonomy.DoesNotExist:
+            return Response({'error': 'Критерий не найден'}, status=404)
+
+        method_ids = AutoCountingMethod_Criterion.objects.filter(
+            criterion_id=criterion_id
+        ).values_list('auto_counting_method_id', flat=True)
+
+        return Response(list(method_ids), status=200)
+
+    @swagger_auto_schema(
+        operation_summary="Назначить методы автоподсчёта критерию",
+        request_body=openapi.Schema(
+            type=openapi.TYPE_ARRAY,
+            items=openapi.Schema(type=openapi.TYPE_INTEGER),
+            description='Список ID методов, которые должны быть привязаны к критерию'
+        ),
+        responses={200: 'Обновлено', 400: 'Ошибка'}
+    )
+    def put(self, request, criterion_id):
+        try:
+            criterion = Criterion_of_ergonomy.objects.get(id=criterion_id)
+        except Criterion_of_ergonomy.DoesNotExist:
+            return Response({'error': 'Критерий не найден'}, status=404)
+
+        method_ids = request.data
+        if not isinstance(method_ids, list):
+            return Response({'error': 'Ожидается список ID методов'}, status=400)
+
+        # Проверка, что все переданные методы существуют
+        existing = set(
+            AutoCountingMethod.objects
+            .filter(id__in=method_ids)
+            .values_list('id', flat=True)
+        )
+        missing = set(method_ids) - existing
+        if missing:
+            return Response(
+                {'error': f'Методы с ID {list(missing)} не найдены'},
+                status=400
+            )
+
+        # Полная замена связей
+        AutoCountingMethod_Criterion.objects.filter(criterion_id=criterion_id).delete()
+
+        if method_ids:
+            links = [
+                AutoCountingMethod_Criterion(
+                    criterion=criterion,
+                    auto_counting_method_id=mid
+                )
+                for mid in method_ids
+            ]
+            AutoCountingMethod_Criterion.objects.bulk_create(links)
+
+        return Response(
+            {'message': f'Назначено {len(method_ids)} методов'},
+            status=200
+        )
+
+
+
+
+
+# views.py - добавить новые классы
+
+class CriterionSystemEquationView(BaseAPIView):
+    """Работа с системой уравнений конкретного критерия"""
+    
+    @swagger_auto_schema(
+        operation_summary="Получить систему уравнений критерия",
+        responses={200: 'Система уравнений', 404: 'Не найдено'}
+    )
+    def get(self, request, criterion_id):
+        try:
+            criterion = Criterion_of_ergonomy.objects.get(id=criterion_id)
+            
+            # Получаем систему уравнений для этого критерия
+            sys_eq = SystemEquastionForCriterion.objects.filter(criterion=criterion).first()
+            
+            if not sys_eq:
+                return Response({
+                    'id': None,
+                    'equations': [],
+                    'used_input_ids': [],
+                    'used_criterion_ids': []
+                }, status=200)
+            
+            # Собираем уравнения
+            equations = []
+            for eq_link in EquastionOfCriterionSystemEquastion.objects.filter(
+                criterion_system_equastion=sys_eq
+            ).select_related('formula'):
+                equations.append({
+                    'limit_equastion': eq_link.limit_equastion,
+                    'equastion': eq_link.formula.equation,
+                    'recommendation': eq_link.recommendation
+                })
+            
+            # Собираем используемые параметры (только глобальные)
+            used_input_ids = list(
+                SystemEquastionForCriterion_UIP.objects.filter(
+                    system_equation_for_criteria=sys_eq
+                ).values_list('user_input_param_id', flat=True)
+            )
+            
+            # Собираем используемые критерии
+            used_criterion_ids = list(
+                CilterionUsingForFormula.objects.filter(
+                    system_equation_for_criteria=sys_eq
+                ).values_list('criterion_id', flat=True)
+            )
+            
+            return Response({
+                'id': sys_eq.id,
+                'equations': equations,
+                'used_input_ids': used_input_ids,
+                'used_criterion_ids': used_criterion_ids
+            }, status=200)
+            
+        except Criterion_of_ergonomy.DoesNotExist:
+            return Response({'error': 'Критерий не найден'}, status=404)
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
+    
+    @swagger_auto_schema(
+        operation_summary="Создать или обновить систему уравнений критерия",
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=['equations'],
+            properties={
+                'equations': openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Schema(
+                        type=openapi.TYPE_OBJECT,
+                        required=['limit_equastion', 'equastion'],
+                        properties={
+                            'limit_equastion': openapi.Schema(type=openapi.TYPE_STRING),
+                            'equastion': openapi.Schema(type=openapi.TYPE_STRING),
+                            'recommendation': openapi.Schema(type=openapi.TYPE_STRING),
+                        }
+                    )
+                ),
+                'used_input_ids': openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Schema(type=openapi.TYPE_INTEGER)
+                ),
+                'used_criterion_ids': openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Schema(type=openapi.TYPE_INTEGER)
+                ),
+            }
+        ),
+        responses={200: 'Система уравнений', 400: 'Ошибка'}
+    )
+    def post(self, request, criterion_id):
+        try:
+            criterion = Criterion_of_ergonomy.objects.get(id=criterion_id)
+            
+            data = request.data
+            equations = data.get('equations', [])
+            used_input_ids = data.get('used_input_ids', [])
+            used_criterion_ids = data.get('used_criterion_ids', [])
+            
+            if not equations:
+                return Response({'error': 'Добавьте хотя бы одно уравнение'}, status=400)
+            
+            # Получаем или создаем систему уравнений
+            sys_eq, created = SystemEquastionForCriterion.objects.get_or_create(
+                criterion=criterion
+            )
+            
+            # Если не created, очищаем старые данные
+            if not created:
+                EquastionOfCriterionSystemEquastion.objects.filter(
+                    criterion_system_equastion=sys_eq
+                ).delete()
+                SystemEquastionForCriterion_UIP.objects.filter(
+                    system_equation_for_criteria=sys_eq
+                ).delete()
+                CilterionUsingForFormula.objects.filter(
+                    system_equation_for_criteria=sys_eq
+                ).delete()
+            
+            # Создаем уравнения
+            for eq in equations:
+                formula = Formula.objects.create(equation=eq.get('equastion', ''))
+                EquastionOfCriterionSystemEquastion.objects.create(
+                    criterion_system_equastion=sys_eq,
+                    formula=formula,
+                    limit_equastion=eq.get('limit_equastion', ''),
+                    recommendation=eq.get('recommendation', '')
+                )
+            
+            # Создаем связи с параметрами (глобальные + привязанные к текущему критерию)
+            if used_input_ids:
+                from django.db.models import Q
+                
+                # Принимаем параметры, которые:
+                # 1. Глобальные (cryteria_id IS NULL)
+                # 2. Привязаны к текущему критерию
+                valid_params = UserInputParam.objects.filter(
+                    Q(id__in=used_input_ids) & 
+                    (Q(formula_param__cryteria_id__isnull=True) | 
+                    Q(formula_param__cryteria_id=criterion))
+                )
+                
+                if valid_params.count() != len(used_input_ids):
+                    # Находим проблемные ID
+                    valid_ids = set(valid_params.values_list('id', flat=True))
+                    invalid_ids = set(used_input_ids) - valid_ids
+                    return Response({
+                        'error': f'Параметры с ID {list(invalid_ids)} не являются глобальными и не привязаны к текущему критерию'
+                    }, status=400)
+                
+                SystemEquastionForCriterion_UIP.objects.bulk_create([
+                    SystemEquastionForCriterion_UIP(
+                        system_equation_for_criteria=sys_eq,
+                        user_input_param_id=uid
+                    ) for uid in used_input_ids
+                ])
+            
+            # Создаем связи с другими критериями
+            if used_criterion_ids:
+                # Исключаем текущий критерий
+                used_criterion_ids = [cid for cid in used_criterion_ids if cid != criterion_id]
+                
+                if used_criterion_ids:
+                    CilterionUsingForFormula.objects.bulk_create([
+                        CilterionUsingForFormula(
+                            system_equation_for_criteria=sys_eq,
+                            criterion_id=cid
+                        ) for cid in used_criterion_ids
+                    ])
+            
+            # Возвращаем обновленные данные
+            return self.get(request, criterion_id)
+            
+        except Criterion_of_ergonomy.DoesNotExist:
+            return Response({'error': 'Критерий не найден'}, status=404)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return Response({'error': str(e)}, status=500)
+    
+    @swagger_auto_schema(
+        operation_summary="Удалить систему уравнений критерия",
+        responses={204: 'Удалено', 404: 'Не найдено'}
+    )
+    def delete(self, request, criterion_id):
+        try:
+            criterion = Criterion_of_ergonomy.objects.get(id=criterion_id)
+            sys_eq = SystemEquastionForCriterion.objects.filter(criterion=criterion).first()
+            
+            if not sys_eq:
+                return Response({'error': 'Система уравнений не найдена'}, status=404)
+            
+            # Удаляем уравнения и их формулы
+            for eq_link in EquastionOfCriterionSystemEquastion.objects.filter(
+                criterion_system_equastion=sys_eq
+            ):
+                formula_id = eq_link.formula_id
+                eq_link.delete()
+                
+                # Удаляем формулу, если она больше не используется
+                if not Formula.objects.filter(id=formula_id).exclude(
+                    equastionofcriterionsystemequastion__isnull=False,
+                    commonformula__isnull=False,
+                    equastionofsystemequastion__isnull=False
+                ).exists():
+                    Formula.objects.filter(id=formula_id).delete()
+            
+            # Удаляем связи
+            SystemEquastionForCriterion_UIP.objects.filter(
+                system_equation_for_criteria=sys_eq
+            ).delete()
+            CilterionUsingForFormula.objects.filter(
+                system_equation_for_criteria=sys_eq
+            ).delete()
+            
+            # Удаляем саму систему
+            sys_eq.delete()
+            
+            return Response(status=204)
+            
+        except Criterion_of_ergonomy.DoesNotExist:
+            return Response({'error': 'Критерий не найден'}, status=404)
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
+
+
+class GlobalParametersListView(BaseAPIView):
+    """Получение списка глобальных параметров (для использования в системе уравнений критерия)"""
+    
+    @swagger_auto_schema(
+        operation_summary="Список глобальных параметров",
+        responses={200: 'Список параметров'}
+    )
+    def get(self, request):
+        try:
+            # Получаем только параметры, у которых cryteria_id IS NULL
+            global_fps = FormulaParam.objects.filter(
+                cryteria_id__isnull=True,
+                is_active=True
+            ).prefetch_related(
+                'userinputparam_set__userinputparamroomtype_set__room_type'
+            )
+            
+            parameters = []
+            for fp in global_fps:
+                for uip in fp.userinputparam_set.all():
+                    parameters.append({
+                        'id': uip.id,
+                        'varName': fp.name,
+                        'label': fp.label or fp.name,
+                        'inputType': 'manual',
+                        'paramType': uip.type,
+                        'minVal': uip.min_value,
+                        'maxVal': uip.max_value,
+                        'roomTypeIds': [
+                            rel.room_type.id 
+                            for rel in uip.userinputparamroomtype_set.all()
+                        ],
+                    })
+            
+            return Response(parameters, status=200)
+            
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
+
+
+class AllCriteriaListView(BaseAPIView):
+    """Получение списка всех критериев (для выбора других критериев)"""
+    
+    @swagger_auto_schema(
+        operation_summary="Список всех критериев",
+        responses={200: 'Список критериев'}
+    )
+    def get(self, request):
+        try:
+            criteria = Criterion_of_ergonomy.objects.filter(
+                is_active=True
+            ).values('id', 'name', 'var_name')
+            
+            return Response(list(criteria), status=200)
+            
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)  
+
+
+
+class ReportCreateView(BaseAPIView):
+    @swagger_auto_schema(
+        operation_summary="Создание отчета",
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=['floorplan_id', 'criteria_data'],
+            properties={
+                'floorplan_id': openapi.Schema(type=openapi.TYPE_INTEGER),
+                'criteria_data': openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Schema(
+                        type=openapi.TYPE_OBJECT,
+                        properties={
+                            'criterion_id': openapi.Schema(type=openapi.TYPE_INTEGER),
+                            'answers': openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Schema(type=openapi.TYPE_OBJECT)),
+                            'parameters': openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Schema(type=openapi.TYPE_OBJECT)),
+                        }
+                    )
+                ),
+                'global_parameters': openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Schema(type=openapi.TYPE_OBJECT)
+                ),
+            }
+        ),
+        responses={201: 'Отчет создан', 400: 'Ошибка'}
+    )
+    def post(self, request):
+        try:
+            data = request.data
+            floorplan_id = data.get('floorplan_id')
+            criteria_data = data.get('criteria_data', [])
+            global_parameters = data.get('global_parameters', [])
+            
+            if not floorplan_id:
+                return Response({'error': 'floorplan_id обязателен'}, status=400)
+            
+            # Получаем план
+            try:
+                floorplan = Floorplan.objects.get(id=floorplan_id)
+            except Floorplan.DoesNotExist:
+                return Response({'error': 'План не найден'}, status=404)
+            
+            # 1. Создаем отчет
+            report = Report.objects.create(
+                date=timezone.now(),
+                Mark_of_Ergonomy=0,
+                Score_Of_Ergonomy=0
+            )
+            
+            # 2. Создаем запись плана в отчете
+            report_floorplan = Report_floorplan.objects.create(
+                report=report,
+                img=floorplan.img,
+                floorpan_id=floorplan.id,
+                width=floorplan.width,
+                height=floorplan.height,
+                pixel_to_m2=floorplan.pixel_to_m_in_square,
+                square_of_habitation=floorplan.square_of_habitation
+            )
+            
+            # Копируем комнаты, мебель и конструктивные элементы
+            room_id_map = {}  # original_id -> report_room_id
+            for room in floorplan.room_set.all():
+                report_room = Report_Room.objects.create(
+                    floorplan=report_floorplan,
+                    min_x=room.min_x,
+                    max_x=room.max_x,
+                    min_y=room.min_y,
+                    max_y=room.max_y,
+                    room_type=room.room_type_id.type_name if room.room_type_id else '',
+                    square_of_room=room.square
+                )
+                room_id_map[room.id] = report_room.id
+                
+                # Копируем мебель
+                for furn in room.furniture_set.all():
+                    Report_Furniture.objects.create(
+                        room=report_room,
+                        furniture_type=furn.furniture_type_id.type_name if furn.furniture_type_id else '',
+                        min_x=furn.min_x,
+                        max_x=furn.max_x,
+                        min_y=furn.min_y,
+                        max_y=furn.max_y
+                    )
+                
+                # Копируем конструктивные элементы
+                for ce in room.constructelement_set.all():
+                    Report_Construct_eltment.objects.create(
+                        room=report_room,
+                        con_el_type=ce.construct_element_type_id.type_name if ce.construct_element_type_id else '',
+                        min_x=ce.min_x,
+                        max_x=ce.max_x,
+                        min_y=ce.min_y,
+                        max_y=ce.max_y
+                    )
+            
+            # Копируем конструктивные элементы без комнаты (двери)
+            for ce in floorplan.constructelement_set.filter(room_id__isnull=True):
+                # Создаем виртуальную комнату для двери
+                virtual_room = Report_Room.objects.create(
+                    floorplan=report_floorplan,
+                    min_x=ce.min_x,
+                    max_x=ce.max_x,
+                    min_y=ce.min_y,
+                    max_y=ce.max_y,
+                    room_type='corridor',
+                    square_of_room=0
+                )
+                Report_Construct_eltment.objects.create(
+                    room=virtual_room,
+                    con_el_type=ce.construct_element_type_id.type_name if ce.construct_element_type_id else '',
+                    min_x=ce.min_x,
+                    max_x=ce.max_x,
+                    min_y=ce.min_y,
+                    max_y=ce.max_y
+                )
+            
+            # 3. Обработка критериев
+            total_score = 0
+            total_weight = 0
+            criterion_results = {}  # criterion_id -> {param_values, score}
+            
+            for crit_data in criteria_data:
+                criterion_id = crit_data.get('criterion_id')
+                answers = crit_data.get('answers', [])
+                parameters = crit_data.get('parameters', [])
+                
+                try:
+                    criterion = Criterion_of_ergonomy.objects.get(id=criterion_id)
+                except Criterion_of_ergonomy.DoesNotExist:
+                    continue
+                
+                # Создаем запись критерия в отчете
+                cor = Critery_of_Ergonomy_Report.objects.create(
+                    report=report,
+                    weight=criterion.weight,
+                    Name=criterion.name,
+                    Score=0,
+                    Mark=0
+                )
+                
+                # 3.1. Вызов AutoCountingMethod
+                auto_params = {}
+                acm_links = AutoCountingMethod_Criterion.objects.filter(criterion=criterion)
+                for acm_link in acm_links:
+                    method = acm_link.auto_counting_method
+                    try:
+                        method_class = getattr(special_methods, method.name)
+                        instance = method_class()
+                        result = instance.get(floorplan_id=floorplan_id)
+                        
+                        # Сохраняем результат метода
+                        SpecialMethodsResult.objects.create(
+                            cor=cor,
+                            name_of_method=method.name,
+                            results=result.recommendations,
+                            score=result.result
+                        )
+                        
+                        # Сохраняем рекомендации для объектов
+                        for rec in result.recommendations:
+                            element_type = rec.get('element_type')
+                            element_id = rec.get('element_id')
+                            recommendation = rec.get('recommendation')
+                            
+                            if element_type == 'room' and element_id in room_id_map:
+                                ReportRoomRecommendation.objects.create(
+                                    room_id=room_id_map[element_id],
+                                    recommendation=recommendation
+                                )
+                            elif element_type == 'furniture':
+                                # Найти мебель в отчете
+                                furn = Report_Furniture.objects.filter(
+                                    room__floorplan=report_floorplan,
+                                    id=element_id
+                                ).first()
+                                if furn:
+                                    ReportFurnitureRecommendation.objects.create(
+                                        furniture=furn,
+                                        recommendation=recommendation
+                                    )
+                            elif element_type == 'construct_element':
+                                ce = Report_Construct_eltment.objects.filter(
+                                    room__floorplan=report_floorplan,
+                                    id=element_id
+                                ).first()
+                                if ce:
+                                    ReportConstructElementRecommendation.objects.create(
+                                        construct_element=ce,
+                                        recommendation=recommendation
+                                    )
+                        
+                        auto_params[method.name] = result.result
+                    except Exception as e:
+                        print(f"Ошибка выполнения метода {method.name}: {e}")
+                
+                # 3.2. Обработка вопросов
+                question_score = 0
+                question_count = 0
+                
+                for answer_data in answers:
+                    question_id = answer_data.get('question_id')
+                    answer_text = answer_data.get('answer')
+                    room_data = answer_data.get('room')  # Для вопросов по комнатам
+                    
+                    try:
+                        question = Form_question.objects.get(id=question_id)
+                    except Form_question.DoesNotExist:
+                        continue
+                    
+                    # Находим ответ
+                    form_answer = FormAnswer.objects.filter(
+                        question_id=question,
+                        answer=answer_text
+                    ).first()
+                    
+                    score = form_answer.score if form_answer else 5
+                    
+                    if room_data:
+                        # Вопрос по комнате - сохраняем для среднего балла
+                        Report_Question_Answer.objects.create(
+                            cor=cor,
+                            question=question.question,
+                            answer=answer_text,
+                            score=score
+                        )
+                        question_score += score
+                        question_count += 1
+                    else:
+                        # Общий вопрос
+                        Report_Question_Answer.objects.create(
+                            cor=cor,
+                            question=question.question,
+                            answer=answer_text,
+                            score=score
+                        )
+                        question_score += score
+                        question_count += 1
+                
+                # Средний балл по вопросам
+                avg_question_score = question_score / question_count if question_count > 0 else 0
+                
+                # 3.3. Обработка параметров
+                param_values = {}
+                
+                # Глобальные параметры
+                for param_data in global_parameters:
+                    param_id = param_data.get('id')
+                    param_value = param_data.get('value')
+                    try:
+                        uip = UserInputParam.objects.get(id=param_id)
+                        param_values[uip.formula_param.name] = param_value
+                    except UserInputParam.DoesNotExist:
+                        pass
+                
+                # Параметры критерия
+                for param_data in parameters:
+                    param_id = param_data.get('id')
+                    param_value = param_data.get('value')
+                    room_type_id = param_data.get('room_type_id')
+                    
+                    try:
+                        uip = UserInputParam.objects.get(id=param_id)
+                        param_name = uip.formula_param.name
+                        
+                        if room_type_id:
+                            # Параметр по комнате - сохраняем для каждой комнаты
+                            for orig_room_id, report_room_id in room_id_map.items():
+                                report_room = Report_Room.objects.get(id=report_room_id)
+                                if report_room.room_type == RoomType.objects.get(id=room_type_id).type_name:
+                                    param_values[f"{param_name}_room_{report_room_id}"] = param_value
+                        else:
+                            param_values[param_name] = param_value
+                    except UserInputParam.DoesNotExist:
+                        pass
+                
+                # Добавляем автопараметры
+                param_values.update(auto_params)
+                
+                criterion_results[criterion_id] = {
+                    'cor': cor,
+                    'param_values': param_values,
+                    'question_score': avg_question_score
+                }
+            
+            # 4. Обработка систем уравнений (в правильном порядке)
+            # Сначала критерии без системы уравнений, потом с системой
+            criteria_without_system = []
+            criteria_with_system = []
+            
+            for crit_data in criteria_data:
+                criterion_id = crit_data.get('criterion_id')
+                try:
+                    criterion = Criterion_of_ergonomy.objects.get(id=criterion_id)
+                    if criterion.is_counting_by_system_equastion:
+                        criteria_with_system.append(criterion_id)
+                    else:
+                        criteria_without_system.append(criterion_id)
+                except:
+                    pass
+            
+            # Обрабатываем сначала без системы
+            for criterion_id in criteria_without_system:
+                if criterion_id in criterion_results:
+                    self._calculate_criterion_score(criterion_results[criterion_id])
+            
+            # Потом с системой (могут использовать результаты других критериев)
+            for criterion_id in criteria_with_system:
+                if criterion_id in criterion_results:
+                    self._calculate_criterion_with_system(
+                        criterion_results[criterion_id],
+                        criterion_id,
+                        criterion_results,
+                        room_id_map,
+                        report_floorplan
+                    )
+            
+            # 5. Вычисляем итоговый балл
+            for crit_data in criteria_data:
+                criterion_id = crit_data.get('criterion_id')
+                if criterion_id in criterion_results:
+                    cr = criterion_results[criterion_id]
+                    cor = cr['cor']
+                    score = cr.get('final_score', cr['question_score'])
+                    
+                    cor.Score = score
+                    cor.Mark = self._get_mark(score, criterion_id)
+                    cor.save()
+                    
+                    total_score += score * cor.weight
+                    total_weight += cor.weight
+            
+            report.Score_Of_Ergonomy = total_score / total_weight if total_weight > 0 else 0
+            report.Mark_of_Ergonomy = self._get_mark(report.Score_Of_Ergonomy, None)
+            report.save()
+            
+            return Response({
+                'report_id': report.id,
+                'score': report.Score_Of_Ergonomy,
+                'mark': report.Mark_of_Ergonomy
+            }, status=201)
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return Response({'error': str(e)}, status=500)
+    
+    def _calculate_criterion_score(self, criterion_result):
+        """Вычисление балла для критерия без системы уравнений"""
+        # Пока просто используем средний балл вопросов
+        criterion_result['final_score'] = criterion_result['question_score']
+    
+    def _calculate_criterion_with_system(self, criterion_result, criterion_id, all_results, room_id_map, report_floorplan):
+        """Вычисление балла для критерия с системой уравнений"""
+        try:
+            sys_eq = SystemEquastionForCriterion.objects.get(criterion_id=criterion_id)
+            equations = EquastionOfCriterionSystemEquastion.objects.filter(
+                criterion_system_equastion=sys_eq
+            ).select_related('formula')
+            
+            param_values = criterion_result['param_values']
+            
+            # Получаем лимитирующие параметры
+            limit_params = {}
+            for uip_link in SystemEquastionForCriterion_UIP.objects.filter(
+                system_equation_for_criteria=sys_eq
+            ):
+                uip = uip_link.user_input_param
+                param_name = uip.formula_param.name
+                
+                # Ищем значение в переданных параметрах
+                if param_name in param_values:
+                    limit_params[param_name] = param_values[param_name]
+            
+            # Получаем используемые критерии
+            used_criteria = CilterionUsingForFormula.objects.filter(
+                system_equation_for_criteria=sys_eq
+            ).values_list('criterion_id', flat=True)
+            
+            for crit_id in used_criteria:
+                if crit_id in all_results:
+                    other_result = all_results[crit_id]
+                    other_cor = other_result['cor']
+                    # Добавляем балл другого критерия как параметр
+                    crit = Criterion_of_ergonomy.objects.get(id=crit_id)
+                    limit_params[crit.var_name] = other_cor.Score
+            
+            # Вычисляем по уравнениям
+            total_score = 0
+            equation_count = 0
+            
+            for eq_link in equations:
+                formula = eq_link.formula.equation
+                limit_condition = eq_link.limit_equastion
+                
+                # Проверяем условие
+                if limit_condition:
+                    try:
+                        # Заменяем операторы
+                        condition = limit_condition.replace('=>', '>=').replace('=<', '<=')
+                        condition_met = simple_eval(condition, names=limit_params)
+                        
+                        if not condition_met:
+                            continue
+                    except:
+                        continue
+                
+                # Вычисляем формулу
+                try:
+                    result = simple_eval(formula, names=limit_params)
+                    total_score += result
+                    equation_count += 1
+                    
+                    # Сохраняем результат вычисления
+                    calculation_result.objects.create(
+                        cor=criterion_result['cor'],
+                        name_of_calculation=eq_link.limit_equastion,
+                        formula=formula,
+                        param_value=result,
+                        score=result
+                    )
+                    
+                    # Добавляем рекомендацию если есть
+                    if eq_link.recommendation:
+                        ReportFloorplanRecommendation.objects.create(
+                            floorplan=report_floorplan,
+                            recommendation=eq_link.recommendation
+                        )
+                except Exception as e:
+                    print(f"Ошибка вычисления формулы: {e}")
+            
+            if equation_count > 0:
+                criterion_result['final_score'] = total_score / equation_count
+            else:
+                criterion_result['final_score'] = criterion_result['question_score']
+                
+        except SystemEquastionForCriterion.DoesNotExist:
+            criterion_result['final_score'] = criterion_result['question_score']
+    
+    def _get_mark(self, score, criterion_id):
+        """Получение оценки по баллу"""
+        if criterion_id:
+            try:
+                criterion = Criterion_of_ergonomy.objects.get(id=criterion_id)
+                if score <= criterion.terrible_mark_border:
+                    return 2
+                elif score <= criterion.bad_mark_border:
+                    return 3
+                elif score <= criterion.normal_mark_border:
+                    return 4
+                else:
+                    return 5
+            except:
+                pass
+        
+        # По умолчанию
+        if score <= 3:
+            return 2
+        elif score <= 5:
+            return 3
+        elif score <= 7:
+            return 4
+        else:
+            return 5
+
+
+class ReportDetailView(BaseAPIView):
+    @swagger_auto_schema(
+        operation_summary="Получение отчета",
+        responses={200: 'Отчет', 404: 'Не найден'}
+    )
+    def get(self, request, pk):
+        try:
+            report = Report.objects.prefetch_related(
+                'criteries__calculation_results',
+                'criteries__question_answers',
+                'criteries__special_methods_results',
+                'floorplans__rooms__furniture',
+                'floorplans__rooms__construct_elements',
+                'floorplans__recommendations',
+                'floorplans__rooms__recommendations',
+                'floorplans__rooms__furniture__recommendations',
+                'floorplans__rooms__construct_elements__recommendations'
+            ).get(id=pk)
+            
+            data = {
+                'id': report.id,
+                'date': report.date.isoformat(),
+                'score': report.Score_Of_Ergonomy,
+                'mark': report.Mark_of_Ergonomy,
+                'criteries': []
+            }
+            
+            for cor in report.criteries.all():
+                criterion_data = {
+                    'id': cor.id,
+                    'name': cor.Name,
+                    'weight': cor.weight,
+                    'score': cor.Score,
+                    'mark': cor.Mark,
+                    'calculations': [],
+                    'questions': [],
+                    'special_methods': []
+                }
+                
+                # Результаты вычислений
+                for calc in cor.calculation_results.all():
+                    criterion_data['calculations'].append({
+                        'name': calc.name_of_calculation,
+                        'formula': calc.formula,
+                        'value': calc.param_value,
+                        'score': calc.score
+                    })
+                
+                # Ответы на вопросы
+                for qa in cor.question_answers.all():
+                    criterion_data['questions'].append({
+                        'question': qa.question,
+                        'answer': qa.answer,
+                        'score': qa.score
+                    })
+                
+                # Результаты специальных методов
+                for sm in cor.special_methods_results.all():
+                    criterion_data['special_methods'].append({
+                        'name': sm.name_of_method,
+                        'score': sm.score,
+                        'results': sm.results
+                    })
+                
+                data['criteries'].append(criterion_data)
+            
+            # Планы и рекомендации
+            for fp in report.floorplans.all():
+                fp_data = {
+                    'id': fp.id,
+                    'recommendations': [r.recommendation for r in fp.recommendations.all()],
+                    'rooms': []
+                }
+                
+                for room in fp.rooms.all():
+                    room_data = {
+                        'id': room.id,
+                        'type': room.room_type,
+                        'square': room.square_of_room,
+                        'recommendations': [r.recommendation for r in room.recommendations.all()],
+                        'furniture': [],
+                        'construct_elements': []
+                    }
+                    
+                    for furn in room.furniture.all():
+                        furn_data = {
+                            'type': furn.furniture_type,
+                            'recommendations': [r.recommendation for r in furn.recommendations.all()]
+                        }
+                        room_data['furniture'].append(furn_data)
+                    
+                    for ce in room.construct_elements.all():
+                        ce_data = {
+                            'type': ce.con_el_type,
+                            'recommendations': [r.recommendation for r in ce.recommendations.all()]
+                        }
+                        room_data['construct_elements'].append(ce_data)
+                    
+                    fp_data['rooms'].append(room_data)
+                
+                data['floorplans'] = [fp_data]
+            
+            return Response(data, status=200)
+            
+        except Report.DoesNotExist:
+            return Response({'error': 'Отчет не найден'}, status=404)
         except Exception as e:
             return Response({'error': str(e)}, status=500)

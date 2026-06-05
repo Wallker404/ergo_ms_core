@@ -64,7 +64,7 @@
                       class="btn btn-sm"
                       :class="newQuestion.room_type_ids.includes(rt.id) ? 'btn-primary' : 'btn-outline-secondary'"
                       @click="toggleNewRoom(rt.id)">
-                {{ rt.type_name }}
+                {{ rt.label }}
               </button>
             </div>
             <small v-if="!roomTypes.length" class="text-muted">Список типов комнат пуст</small>
@@ -142,7 +142,7 @@
                         class="btn btn-sm"
                         :class="q.room_type_ids.includes(rt.id) ? 'btn-primary' : 'btn-outline-secondary'"
                         @click="toggleQuestionRoom(q.room_type_ids, rt.id)">
-                  {{ rt.type_name }}
+                  {{ rt.label }}
                 </button>
               </div>
             </div>
@@ -295,6 +295,7 @@ async function fetchRoomTypes() {
   try {
     const res = await apiClient.get(roomAnalyticsEndpoints.roomAnalytics.RoomTypesList)
     roomTypes.value = Array.isArray(res.data) ? res.data : []
+    console.log(roomTypes.value)
   } catch (e) { console.error('RoomTypes error:', e) }
 }
 

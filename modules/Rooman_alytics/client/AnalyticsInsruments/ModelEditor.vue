@@ -23,7 +23,7 @@
       <div class="card-body">
         <h6 class="card-subtitle mb-3 text-muted">Новый критерий</h6>
         <div class="row g-3 align-items-end">
-          <div class="col-md-5">
+          <div class="col-md-3">
             <label class="form-label small">Название</label>
             <input 
               type="text" 
@@ -33,26 +33,51 @@
               @keyup.enter="addCriterion"
             />
           </div>
-          <div class="col-md-4">
+          <div class="col-md-2">
+            <label class="form-label small">Имя переменной</label>
+            <input 
+              type="text" 
+              class="form-control" 
+              v-model.trim="newCriterion.var_name" 
+              placeholder="Напр. C1"
+              maxlength="15"
+            />
+          </div>
+          <div class="col-md-2">
             <label class="form-label small">Вес (0–1)</label>
-            <div class="input-group">
-              <input 
-                type="number" 
-                class="form-control" 
-                v-model.number="newCriterion.weight"
-                min="0" max="1" step="0.01"
-              />
-              <input 
-                type="range" 
-                class="form-range" 
-                min="0" max="1" step="0.01"
-                v-model.number="newCriterion.weight"
-                style="max-width: 100px;"
-              />
-            </div>
+            <input 
+              type="number" 
+              class="form-control" 
+              v-model.number="newCriterion.weight"
+              min="0" max="1" step="0.01"
+            />
           </div>
           <div class="col-md-3">
-            <button class="btn btn-success w-100" @click="addCriterion" :disabled="!newCriterion.name || addLoading">
+            <label class="form-label small">Способ вычисления</label>
+            <div class="d-flex align-items-center gap-2 mt-1">
+              <span class="small" :class="!newCriterion.is_counting_by_system_equastion ? 'fw-bold text-primary' : 'text-muted'">
+                Анкетирование
+              </span>
+              <div class="form-check form-switch m-0">
+                <input 
+                  class="form-check-input" 
+                  type="checkbox" 
+                  role="switch"
+                  id="newCountingType"
+                  v-model="newCriterion.is_counting_by_system_equastion"
+                />
+              </div>
+              <span class="small" :class="newCriterion.is_counting_by_system_equastion ? 'fw-bold text-primary' : 'text-muted'">
+                Система уравнений
+              </span>
+            </div>
+          </div>
+          <div class="col-md-2">
+            <button 
+              class="btn btn-success w-100" 
+              @click="addCriterion" 
+              :disabled="!canCreate || addLoading"
+            >
               <span v-if="addLoading" class="spinner-border spinner-border-sm me-1" role="status"></span>
               {{ addLoading ? '...' : 'Создать' }}
             </button>
@@ -137,6 +162,46 @@
               </div>
             </div>
 
+            <!-- 🔥 Имя переменной -->
+            <div class="mb-3">
+              <label class="form-label small d-flex justify-content-between">
+                <span>Имя переменной</span>
+                <span class="text-muted small">используется в формулах</span>
+              </label>
+              <input 
+                type="text" 
+                class="form-control form-control-sm"
+                :class="{ 'is-invalid': !criterion.varName?.trim() }"
+                :value="criterion.varName"
+                @input="updateVarName(criterion.id, $event.target.value)"
+                maxlength="15"
+                placeholder="Напр. C1"
+              />
+              <div class="invalid-feedback">Имя переменной не может быть пустым</div>
+            </div>
+
+            <!-- 🔥 Способ вычисления (read-only) -->
+            <div class="mb-3">
+              <label class="form-label small">Способ вычисления</label>
+              <div class="d-flex align-items-center gap-2 p-2 rounded" 
+                   :style="{ backgroundColor: criterion.isCountingBySystemEquastion ? '#e7f1ff' : '#f8f9fa' }">
+                <span 
+                  class="badge" 
+                  :class="criterion.isCountingBySystemEquastion ? 'bg-info' : 'bg-secondary'"
+                >
+                  {{ criterion.isCountingBySystemEquastion ? 'Система уравнений' : 'Анкетирование' }}
+                </span>
+                <small class="text-muted">
+                  {{ criterion.isCountingBySystemEquastion 
+                     ? 'Расчитывается на основе других критериев' 
+                     : 'Вычисляется на основе данных анкеты' }}
+                </small>
+              </div>
+              <small class="text-muted d-block mt-1">
+                Тип расчёта задаётся при создании и не может быть изменён
+              </small>
+            </div>
+
             <!-- Переключатель активности -->
             <div class="form-check form-switch mb-3">
               <input 
@@ -151,7 +216,7 @@
               </label>
             </div>
 
-            <!-- Вес критерия: слайдер + числовой ввод -->
+            <!-- Вес критерия -->
             <div class="mb-3">
               <label class="form-label small d-flex justify-content-between">
                 <span>Вес критерия</span>
@@ -180,7 +245,7 @@
               </div>
             </div>
 
-            <!-- 🔥 НОВАЯ ЛОГИКА: редактирование границ (border) -->
+            <!-- Шкала оценки -->
             <div>
               <label class="form-label small mb-2">Шкала оценки (0–10)</label>
               <div class="table-responsive">
@@ -192,7 +257,6 @@
                     </tr>
                   </thead>
                   <tbody>
-                    <!-- Ужасно: 0 — terrible_mark_border -->
                     <tr>
                       <td class="align-middle">Ужасно</td>
                       <td>
@@ -201,12 +265,10 @@
                           class="form-control form-control-sm" 
                           :value="criterion.borders.terrible"
                           @change="updateBorder(criterion.id, 'terrible', $event.target.value)"
-                          min="0.1" max="9.9"
-                          step="0.1"
+                          min="0.1" max="9.9" step="0.1"
                         />
                       </td>
                     </tr>
-                    <!-- Плохо: terrible — bad_mark_border -->
                     <tr>
                       <td class="align-middle">Плохо</td>
                       <td>
@@ -216,12 +278,10 @@
                           :value="criterion.borders.bad"
                           @change="updateBorder(criterion.id, 'bad', $event.target.value)"
                           :min="criterion.borders.terrible + 0.1"
-                          :max="9.9"
-                          step="0.1"
+                          :max="9.9" step="0.1"
                         />
                       </td>
                     </tr>
-                    <!-- Нормально: bad — normal_mark_border -->
                     <tr>
                       <td class="align-middle">Нормально</td>
                       <td>
@@ -231,12 +291,10 @@
                           :value="criterion.borders.normal"
                           @change="updateBorder(criterion.id, 'normal', $event.target.value)"
                           :min="criterion.borders.bad + 0.1"
-                          :max="9.9"
-                          step="0.1"
+                          :max="9.9" step="0.1"
                         />
                       </td>
                     </tr>
-                    <!-- Хорошо: normal — good_mark_border -->
                     <tr>
                       <td class="align-middle">Хорошо</td>
                       <td>
@@ -246,12 +304,10 @@
                           :value="criterion.borders.good"
                           @change="updateBorder(criterion.id, 'good', $event.target.value)"
                           :min="criterion.borders.normal + 0.1"
-                          :max="9.9"
-                          step="0.1"
+                          :max="9.9" step="0.1"
                         />
                       </td>
                     </tr>
-                    <!-- Отлично: good — 10 (фиксировано) -->
                     <tr>
                       <td class="align-middle">Отлично</td>
                       <td class="text-muted">10 (фикс.)</td>
@@ -303,7 +359,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { Settings, Trash2, Palette } from 'lucide-vue-next'
 import { apiClient } from '../../../../core/client/src/js/api/manager'
@@ -314,21 +370,33 @@ const router = useRouter()
 const colorPalette = [
   '#0d6efd', '#6610f2', '#6f42c1', '#d63384', '#dc3545',
   '#fd7e14', '#ffc107', '#198754', '#20c997', '#0dcaf0',
-  '#343a40', '#6c757d', '#adb5bd', '#e83e8c', '#6610f2',
-  '#007bff', '#28a745', '#17a2b8', '#ffc107', '#dc3545'
+  '#343a40', '#6c757d', '#adb5bd', '#e83e8c', '#007bff',
+  '#28a745', '#17a2b8'
 ]
 
 const criteria = ref([])
 const isLoading = ref(true)
+
 const addLoading = ref(false)
 const showAddForm = ref(false)
 const validationError = ref('')
 
-const newCriterion = ref({ name: '', weight: 0.5 })
+const newCriterion = ref({
+  name: '',
+  weight: 0.5,
+  var_name: '',
+  is_counting_by_system_equastion: false,
+})
+
+// Валидация формы создания
+const canCreate = computed(() => {
+  const n = newCriterion.value
+  return n.name?.trim() 
+      && n.var_name?.trim() 
+      && n.var_name.length <= 15
+})
 
 // 🔁 Трансформер: Бэкенд → Фронтенд
-// Бэкенд: { terrible_mark_border: 3, bad_mark_border: 5, ... }
-// Фронтенд: { borders: { terrible: 3, bad: 5, normal: 7, good: 9 } }
 function backendToFrontend(c) {
   return {
     id: c.id,
@@ -337,6 +405,8 @@ function backendToFrontend(c) {
     active: c.is_active,
     weight: c.weight,
     color: c.color,
+    varName: c.var_name || '',
+    isCountingBySystemEquastion: !!c.is_counting_by_system_equastion,
     borders: {
       terrible: c.terrible_mark_border ?? 3,
       bad: c.bad_mark_border ?? 5,
@@ -355,6 +425,8 @@ function frontendToBackend(c) {
     is_active: c.active,
     weight: c.weight,
     color: c.color,
+    var_name: c.varName || '',
+    // ⚠️ is_counting_by_system_equastion НЕ отправляем — его менять нельзя
     terrible_mark_border: b.terrible ?? 3,
     bad_mark_border: b.bad ?? 5,
     normal_mark_border: b.normal ?? 7,
@@ -362,7 +434,6 @@ function frontendToBackend(c) {
   }
 }
 
-// 📥 Загрузка критериев
 async function fetchCriteria() {
   isLoading.value = true
   validationError.value = ''
@@ -386,7 +457,7 @@ function formatDate(dateString) {
 }
 
 async function addCriterion() {
-  if (!newCriterion.value.name?.trim() || addLoading.value) return
+  if (!canCreate.value || addLoading.value) return
   
   addLoading.value = true
   validationError.value = ''
@@ -395,8 +466,10 @@ async function addCriterion() {
     const response = await apiClient.post(
       roomAnalyticsEndpoints.roomAnalytics.CriteriesAdd,
       {
-        'name': newCriterion.value.name.trim(),
-        'weight': newCriterion.value.weight
+        name: newCriterion.value.name.trim(),
+        weight: newCriterion.value.weight,
+        var_name: newCriterion.value.var_name.trim(),
+        is_counting_by_system_equastion: newCriterion.value.is_counting_by_system_equastion,
       }
     )
     
@@ -407,7 +480,12 @@ async function addCriterion() {
       await fetchCriteria()
     }
     
-    newCriterion.value = { name: '', weight: 0.5 }
+    newCriterion.value = {
+      name: '',
+      weight: 0.5,
+      var_name: '',
+      is_counting_by_system_equastion: false,
+    }
     showAddForm.value = false
     
   } catch (error) {
@@ -421,19 +499,14 @@ async function addCriterion() {
 async function deleteCriterion(id) {
   if (!confirm('Удалить этот критерий? Это действие нельзя отменить.')) return
   try {
-    await apiClient.delete(
-      roomAnalyticsEndpoints.roomAnalytics.Criteriesdelete(id)
-    )
+    await apiClient.delete(roomAnalyticsEndpoints.roomAnalytics.Criteriesdelete(id))
     criteria.value = criteria.value.filter(c => c.id !== id)
-    
-    console.log(`✅ Критерий #${id} удалён`)
-    
+    console.log(`Критерий #${id} удалён`)
   } catch (error) {
-    console.error(`❌ Ошибка удаления критерия #${id}:`, error)
-    
+    console.error(`Ошибка удаления критерия #${id}:`, error)
     const errorMsg = error.response?.data?.error || error.message || 'Не удалось удалить критерий'
     alert('Ошибка: ' + errorMsg)
-    }
+  }
 }
 
 function updateColor(id, color) {
@@ -451,6 +524,14 @@ function updateWeight(id, value) {
   if (c) {
     const numValue = parseFloat(value)
     c.weight = Math.max(0, Math.min(1, isNaN(numValue) ? 0 : numValue))
+  }
+}
+
+function updateVarName(id, value) {
+  const c = criteria.value.find(c => c.id === id)
+  if (c) {
+    // Обрезаем до 15 символов
+    c.varName = (value || '').slice(0, 15)
   }
 }
 
@@ -474,7 +555,6 @@ function updateBorder(criterionId, borderName, value) {
     }
   }
   if (idx < order.length - 1) {
-
     const nextBorder = order[idx + 1]
     if (c.borders[borderName] >= c.borders[nextBorder] - 0.01) {
       c.borders[nextBorder] = Math.min(9.9, c.borders[borderName] + 0.1)
@@ -486,7 +566,7 @@ function openMathModel(id) {
   router.push({ name: 'FunctionsAndFormPage', params: { criterionId: id } })
 }
 
-// ✅ Валидация весов
+// Валидация весов
 function validateWeights() {
   const activeCriteria = criteria.value.filter(c => c.active)
   const totalWeight = activeCriteria.reduce((sum, c) => sum + (c.weight || 0), 0)
@@ -498,18 +578,16 @@ function validateWeights() {
   return null
 }
 
-// ✅ Валидация границ: должны строго возрастать
+// Валидация границ
 function validateBorders() {
   for (const c of criteria.value) {
     const b = c.borders
     if (!b) continue
     
-    // terrible_mark_border > 0
     if (b.terrible <= 0) {
       return `Критерий "${c.name}": граница "Ужасно" должна быть > 0`
     }
     
-    // Проверка строгого возрастания: 0 < terrible < bad < normal < good < 10
     const borders = [0, b.terrible, b.bad, b.normal, b.good, 10]
     for (let i = 0; i < borders.length - 1; i++) {
       if (borders[i] >= borders[i + 1] - 0.001) {
@@ -518,6 +596,31 @@ function validateBorders() {
       }
     }
   }
+  return null
+}
+
+// Валидация имён переменных
+function validateVarNames() {
+  const names = criteria.value.map(c => c.varName?.trim()).filter(Boolean)
+  
+  // Проверка на пустые
+  const empty = criteria.value.find(c => !c.varName?.trim())
+  if (empty) {
+    return `Критерий "${empty.name}": имя переменной не может быть пустым`
+  }
+  
+  // Проверка длины
+  const tooLong = criteria.value.find(c => (c.varName || '').length > 15)
+  if (tooLong) {
+    return `Критерий "${tooLong.name}": имя переменной не должно превышать 15 символов`
+  }
+  
+  // Проверка уникальности
+  const unique = new Set(names)
+  if (unique.size !== names.length) {
+    return 'Имена переменных должны быть уникальными'
+  }
+  
   return null
 }
 
@@ -530,6 +633,9 @@ async function saveCriteria() {
   const borderError = validateBorders()
   if (borderError) { validationError.value = borderError; return }
   
+  const varNameError = validateVarNames()
+  if (varNameError) { validationError.value = varNameError; return }
+  
   isLoading.value = true
   
   try {
@@ -540,7 +646,7 @@ async function saveCriteria() {
       backendPayload
     )
     
-    console.log('✅ Критерии сохранены:', response.data)
+    console.log('Критерии сохранены:', response.data)
     
     if (response.data?.objects && Array.isArray(response.data.objects)) {
       criteria.value = response.data.objects.map(backendToFrontend)
@@ -549,7 +655,7 @@ async function saveCriteria() {
     alert('Критерии успешно сохранены!')
     
   } catch (error) {
-    console.error('❌ Ошибка сохранения:', error)
+    console.error('Ошибка сохранения:', error)
     validationError.value = 'Ошибка при сохранении: ' + (error.response?.data?.error || error.message || 'Ошибка сети')
   } finally {
     isLoading.value = false

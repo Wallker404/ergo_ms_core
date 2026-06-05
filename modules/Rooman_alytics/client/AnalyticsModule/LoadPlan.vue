@@ -30,22 +30,19 @@
             Указать мебель
           </button>
         </div>
-
         <button
           type="button"
-          class="btn btn-outline-secondary ms-2"
-          @click="runONNXDetection"
-          :disabled="!imageLoaded"
+          class="btn btn-outline-danger ms-2"
+          @click="clearEditor"
+          title="Очистить все аннотации"
         >
-          Автоматическое обнаружение объектов
+          Очистить
         </button>
-
         <!-- 🔹 Кнопка открытия списка планов -->
         <button 
           type="button" 
           class="btn btn-outline-info ms-2"
-          @click="toggleFloorplansPanel"
-        >
+          @click="toggleFloorplansPanel">
           Планы
         </button>
       </div>
@@ -296,20 +293,7 @@
     </div>
   </div>
   
-  <!-- Центральная часть: статус -->
-  <div class="d-flex align-items-center">
-    <button
-      v-if="selectedFloorplanId"
-      class="btn btn-outline-warning btn-sm me-2"
-      :disabled="!imageLoaded"
-      @click="updateCurrentFloorplan"
-    >
-      ♻️ Обновить план #{{ selectedFloorplanId }}
-    </button>
-    <span v-if="originalFile && !selectedFloorplanId" class="text-muted small">
-      Готов к сохранению как новый план
-    </span>
-  </div>
+
   
   <!-- Правая часть: сохранение -->
   <button
@@ -318,8 +302,16 @@
     @click="saveResults"
   >
     {{ selectedFloorplanId ? 'Сохранить изменения' : 'Сохранить как новый' }}
-  </button>
+  </button> 
   
+  <button
+  class="btn btn-outline-success"
+  :disabled="!selectedFloorplanId"
+  @click="goToQuestionnaire"
+>
+  {{ !selectedFloorplanId ? 'Сначала сохраните или выберите  план' : 'Перейти к заполнению анкеты' }}
+</button>
+
 </div>
       
     </div>
@@ -331,17 +323,17 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { apiClient } from '../../../../core/client/src/js/api/manager'
 import { roomAnalyticsEndpoints } from '../js/endpoints'
+import { useRouter } from 'vue-router'
 //#endregion
 
-//#region управление планом
+const router = useRouter()
 
 //#region refs
 const floorplans = ref([])
 const selectedFloorplanId = ref(null)
 const isFloorplansLoading = ref(false)
-const showFloorplansPanel = ref(false) 
+const showFloorplansPanel = ref(false)
 
-// открытие списка планов
 function toggleFloorplansPanel() {
   showFloorplansPanel.value = !showFloorplansPanel.value
   if (showFloorplansPanel.value) {
@@ -383,7 +375,7 @@ const drawStart = reactive({ x: 0, y: 0 })
 const drawCurrent = reactive({ x: 0, y: 0 })
 
 const interaction = reactive({
-  type: 'idle', // 'idle' | 'pan' | 'draw' | 'move' | 'resize'
+  type: 'idle',
   handle: null,
   startMouse: { x: 0, y: 0 },
   startClientMouse: { x: 0, y: 0 },
@@ -391,13 +383,10 @@ const interaction = reactive({
   startOffset: { x: 0, y: 0 }
 })
 
-const selectionCycle = reactive({
-  key: '',
-  index: -1
-})
+const selectionCycle = reactive({ key: '', index: -1 })
 //#endregion
 
-//#region  computed
+//#region computed
 const currentItems = computed(() => {
   if (mode.value === 'rooms') return roomTypes.value
   if (mode.value === 'walls') return wallTypes.value
@@ -418,7 +407,6 @@ const allAnnotations = computed(() => [
   ...furnitureAnnotations
 ])
 
-const roomObjects = computed(() => roomAnnotations)
 const visibleAnnotations = computed(() => {
   if (displayMode.value === 'all') return allAnnotations.value
   if (displayMode.value === 'rooms') return roomAnnotations
@@ -427,22 +415,40 @@ const visibleAnnotations = computed(() => {
   return []
 })
 
-const furnitureRoomMap = computed(() => {
+// 🔹 Маппинг furniture_id -> room_id (по позиции центра мебели)
+const furnitureRoomIdMap = computed(() => {
   const map = {}
-  const furniture = furnitureAnnotations
-  const rooms = roomObjects.value
-  for (const furn of furniture) {
+  for (const furn of furnitureAnnotations) {
     const cx = furn.x + furn.width / 2
     const cy = furn.y + furn.height / 2
-    let foundRoom = null
-    for (const room of rooms) {
+    let foundRoomId = null
+    for (const room of roomAnnotations) {
       if (cx >= room.x && cx <= room.x + room.width &&
           cy >= room.y && cy <= room.y + room.height) {
-        foundRoom = room.label
+        foundRoomId = room.id
         break
       }
     }
-    map[furn.id] = foundRoom
+    map[furn.id] = foundRoomId
+  }
+  return map
+})
+
+// 🔹 Маппинг furniture_id -> label комнаты (для UI)
+const furnitureRoomMap = computed(() => {
+  const map = {}
+  for (const furn of furnitureAnnotations) {
+    const cx = furn.x + furn.width / 2
+    const cy = furn.y + furn.height / 2
+    let foundRoomLabel = null
+    for (const room of roomAnnotations) {
+      if (cx >= room.x && cx <= room.x + room.width &&
+          cy >= room.y && cy <= room.y + room.height) {
+        foundRoomLabel = room.label
+        break
+      }
+    }
+    map[furn.id] = foundRoomLabel
   }
   return map
 })
@@ -462,8 +468,36 @@ const cursorStyle = computed(() => {
 })
 //#endregion
 
-//#region Функции рисования
+//#region ОБЩАЯ ФУНКЦИЯ СЕРИАЛИЗАЦИИ (на верхнем уровне!)
+function serializeAnnotation(a) {
+  const result = {
+    id: a.id,
+    mode: a.mode,
+    type: a.type,
+    label: a.label,
+    bbox: [
+      Math.round(a.x),
+      Math.round(a.x + a.width),
+      Math.round(a.y),
+      Math.round(a.y + a.height)
+    ],
+  }
 
+  // Для мебели — room_id по позиции центра
+  if (a.mode === 'furniture') {
+    result.room_id = furnitureRoomIdMap.value[a.id] || null
+  }
+
+  // Для комнат — площадь
+  if (a.mode === 'rooms') {
+    result.realArea = a.realArea || 0
+  }
+
+  return result
+}
+//#endregion
+
+//#region Рисование
 function getCanvasCoords(clientX, clientY) {
   const rect = canvasRef.value.getBoundingClientRect()
   return {
@@ -478,32 +512,25 @@ function draw() {
   const ctx = canvas.getContext('2d')
   canvas.width = canvas.parentElement.clientWidth
   canvas.height = canvas.parentElement.clientHeight
-
   ctx.clearRect(0, 0, canvas.width, canvas.height)
-  
-  // 🔹 Рисуем изображение ТОЛЬКО если оно загружено
+
   if (img && imageLoaded.value && img.complete && img.naturalWidth !== 0) {
     ctx.save()
     ctx.translate(offsetX.value, offsetY.value)
     ctx.scale(scale.value, scale.value)
-
     ctx.drawImage(img, 0, 0, imgWidth, imgHeight)
 
-    // Аннотации
     for (const ann of visibleAnnotations.value) {
       ctx.strokeStyle = ann.color
       ctx.lineWidth = 2 / scale.value
       ctx.strokeRect(ann.x, ann.y, ann.width, ann.height)
-
       ctx.fillStyle = ann.color + '33'
       ctx.fillRect(ann.x, ann.y, ann.width, ann.height)
-
       ctx.fillStyle = ann.color
       ctx.font = `${12 / scale.value}px sans-serif`
       ctx.fillText(ann.label, ann.x + 4 / scale.value, ann.y + 14 / scale.value)
     }
 
-    // Текущий прямоугольник
     if (interaction.type === 'draw' && selectedTool.value) {
       const tool = currentItems.value.find(i => i.id === selectedTool.value)
       if (tool) {
@@ -511,7 +538,6 @@ function draw() {
         const y = Math.min(drawStart.y, drawCurrent.y)
         const w = Math.abs(drawCurrent.x - drawStart.x)
         const h = Math.abs(drawCurrent.y - drawStart.y)
-
         ctx.strokeStyle = tool.color
         ctx.lineWidth = 2 / scale.value
         ctx.strokeRect(x, y, w, h)
@@ -520,7 +546,6 @@ function draw() {
       }
     }
 
-    // Ручки выделения
     if (selectedObject.value) {
       const obj = selectedObject.value
       const hs = 8 / scale.value
@@ -539,7 +564,6 @@ function draw() {
         ctx.strokeRect(h.x, h.y, hs, hs)
       }
     }
-
     ctx.restore()
   }
 }
@@ -554,7 +578,6 @@ function centerImage() {
   offsetX.value = (parentRect.width - imgWidth * scale.value) / 2
   offsetY.value = (parentRect.height - imgHeight * scale.value) / 2
 }
-
 //#endregion
 
 //#region Вспомогательные
@@ -628,6 +651,7 @@ function deleteSelectedObject() {
   selectedObject.value = null
   draw()
 }
+
 function setMode(m) {
   mode.value = m
   displayMode.value = m
@@ -636,6 +660,7 @@ function setMode(m) {
   selectionCycle.key = ''
   selectionCycle.index = -1
 }
+
 watch([mode, displayMode, selectedTool], () => {
   if (selectedObject.value && displayMode.value !== 'all' && selectedObject.value.mode !== displayMode.value) {
     selectedObject.value = null
@@ -649,20 +674,16 @@ watch(offsetY, () => draw())
 function onWindowResize() {
   if (imageLoaded.value) draw()
 }
-
 //#endregion
 
-//#region Маштабирование
-
+//#region Масштабирование
 function onWheel(e) {
   if (!imageLoaded.value) return
   const delta = e.deltaY > 0 ? 0.9 : 1.1
   const newScale = Math.max(0.1, Math.min(10, scale.value * delta))
-
   const rect = canvasRef.value.getBoundingClientRect()
   const mouseX = e.clientX - rect.left
   const mouseY = e.clientY - rect.top
-
   offsetX.value = mouseX - (mouseX - offsetX.value) * (newScale / scale.value)
   offsetY.value = mouseY - (mouseY - offsetY.value) * (newScale / scale.value)
   scale.value = newScale
@@ -671,19 +692,15 @@ function onWheel(e) {
 function zoomIn() { scale.value = Math.min(10, scale.value * 1.2) }
 function zoomOut() { scale.value = Math.max(0.1, scale.value / 1.2) }
 function resetZoom() { centerImage() }
-
 //#endregion
 
-//#endregion
-
-//#region  управление запросами
+//#region Управление запросами
 
 async function loadFloorplansList() {
   isFloorplansLoading.value = true
   try {
     const response = await apiClient.get(roomAnalyticsEndpoints.roomAnalytics.FloorplanList)
     floorplans.value = response.data.results || []
-    console.log(floorplans.value)
   } catch (error) {
     console.error('❌ Ошибка загрузки списка планов:', error)
     alert('Не удалось загрузить список планов')
@@ -696,80 +713,57 @@ async function loadFloorplan(id) {
   try {
     const response = await apiClient.get(roomAnalyticsEndpoints.roomAnalytics.FloorplanDetail(id))
     const fp = response.data
-    
-    // 🔸 Сбрасываем состояние
+
     imageLoaded.value = false
 
-
-    // 🔸 Загружаем изображение
     if (fp.img) {
-      const imgUrl = fp.img // Уже base64 или URL
-      
-      console.log('🖼️ Загрузка изображения...')
-      
       img = new Image()
-      
       img.onload = () => {
-        console.log('✅ Изображение загружено:', img.width, 'x', img.height)
         imgWidth = img.width
         imgHeight = img.height
         imageLoaded.value = true
-        
-        // 🔹 Восстанавливаем площадь
+
         if (fp.square_of_habitation > 0) {
           userSquareInput.value = fp.square_of_habitation
-          console.log('📐 Площадь:', userSquareInput.value, 'м²')
-          console.log('📏 Масштаб:', formatPixelScale.value)
         } else {
           userSquareInput.value = null
         }
-        
-        // 🔹 Центрируем и рисуем
-        nextTick(() => { 
+
+        nextTick(() => {
           centerImage()
-          draw() 
+          draw()
         })
       }
-      
-      img.onerror = (err) => {
-        console.error('❌ Ошибка загрузки изображения')
-        console.error('URL длина:', imgUrl?.length)
+      img.onerror = () => {
         imageLoaded.value = false
         img = null
         alert('Не удалось загрузить изображение плана')
       }
-      
-      img.src = imgUrl
+      img.src = fp.img
     } else {
-      console.warn('⚠️ Поле img отсутствует')
       imageLoaded.value = false
     }
-    
-    // 🔸 Восстанавливаем аннотации
-    const toAnnotation = (item, mode) => ({
-  id: item.id,
-  mode,
-  type: item.type,
-  label: item.label,
-  color: item.color,
-  // 🔹 Бэкенд возвращает [min_x, max_x, min_y, max_y]
-  x: item.bbox[0],                      // min_x → x
-  y: item.bbox[2],                      // min_y → y
-  width: item.bbox[1] - item.bbox[0],   // max_x - min_x → width
-  height: item.bbox[3] - item.bbox[2],  // max_y - min_y → height
-  square: item.square || 0,
-  adjacentRoom1: item.adjacentRoom1 || null,
-  adjacentRoom2: item.adjacentRoom2 || null,
-  realArea: item.realArea || null,
-  room: item.room || null,
-})
-    
-    // Очищаем
+
+    const toAnnotation = (item, annMode) => ({
+      id: item.id,
+      mode: annMode,
+      type: item.type,
+      label: item.label,
+      color: item.color,
+      x: item.bbox[0],
+      y: item.bbox[2],
+      width: item.bbox[1] - item.bbox[0],
+      height: item.bbox[3] - item.bbox[2],
+      square: item.square || 0,
+      realArea: item.square || item.realArea || null,
+      room: item.room || null,
+      room_id: item.room_id || null,
+    })
+
     roomAnnotations.splice(0, roomAnnotations.length)
     wallAnnotations.splice(0, wallAnnotations.length)
     furnitureAnnotations.splice(0, furnitureAnnotations.length)
-    
-    // Заполняем
+
     for (const r of fp.rooms || []) {
       roomAnnotations.push(toAnnotation(r, 'rooms'))
     }
@@ -779,18 +773,16 @@ async function loadFloorplan(id) {
     for (const f of fp.furniture || []) {
       furnitureAnnotations.push(toAnnotation(f, 'furniture'))
     }
-    
-    // Обновляем nextId
+
     const maxId = Math.max(
-      ...(roomAnnotations.map(a => a.id)),
-      ...(wallAnnotations.map(a => a.id)),
-      ...(furnitureAnnotations.map(a => a.id)),
+      ...roomAnnotations.map(a => a.id),
+      ...wallAnnotations.map(a => a.id),
+      ...furnitureAnnotations.map(a => a.id),
       0
     )
     nextId = maxId + 1
-    
     selectedFloorplanId.value = id
-    
+
   } catch (error) {
     console.error('❌ Ошибка загрузки плана:', error)
     alert('Не удалось загрузить план: ' + (error.response?.data?.error || error.message))
@@ -802,53 +794,32 @@ async function updateFloorplan(id) {
     alert('Нет данных для обновления')
     return
   }
-  
+
   try {
     const formData = new FormData()
-    
-    // 🔸 Опционально: новый файл
+
     if (originalFile.value) {
       formData.append('image', originalFile.value)
     }
-    
-    // 🔸 Метаданные
+
     formData.append('width', imgWidth?.toString() || '0')
     formData.append('height', imgHeight?.toString() || '0')
-    // ... остальные поля по необходимости
-    
-    // 🔸 Аннотации (если нужно обновить)
-    
-    const serializeAnnotation = (a) => ({
-  id: a.id,
-  mode: a.mode,
-  type: a.type,
-  label: a.label,
-  // 🔹 Порядок: [min_x, max_x, min_y, max_y] — как ждёт бэкенд!
-  bbox: [
-    Math.round(a.x),                    // min_x
-    Math.round(a.x + a.width),          // max_x
-    Math.round(a.y),                    // min_y
-    Math.round(a.y + a.height)          // max_y
-  ],
-  room: furnitureRoomMap.value[a.id] || null,
-})
-    
+
     const annotationsData = {
       rooms: roomAnnotations.map(serializeAnnotation),
       walls: wallAnnotations.map(serializeAnnotation),
       furniture: furnitureAnnotations.map(serializeAnnotation),
     }
     formData.append('data', JSON.stringify(annotationsData))
-    
+
     const response = await apiClient.put(
       roomAnalyticsEndpoints.roomAnalytics.FloorplanDetail(id),
       formData,
       { headers: { 'Content-Type': 'multipart/form-data' } }
     )
-    
+
     alert('✅ План обновлён')
     return response.data
-    
   } catch (error) {
     console.error('❌ Ошибка обновления:', error)
     alert('Ошибка: ' + (error.response?.data?.error || error.message))
@@ -856,21 +827,12 @@ async function updateFloorplan(id) {
   }
 }
 
-async function updateCurrentFloorplan() {
-  if (!selectedFloorplanId.value) return
-  await updateFloorplan(selectedFloorplanId.value)
-  await loadFloorplansList() 
-}
-
 async function deleteFloorplan(id) {
-  if (!confirm('Вы уверены, что хотите удалить этот план? Все данные будут безвозвратно удалены.')) {
-    return
-  }
-  
+  if (!confirm('Вы уверены, что хотите удалить этот план?')) return
+
   try {
     await apiClient.delete(roomAnalyticsEndpoints.roomAnalytics.FloorplanDetail(id))
-    
-    // 🔸 Если удалили текущий открытый план — сбрасываем состояние
+
     if (selectedFloorplanId.value === id) {
       imageLoaded.value = false
       img = null
@@ -881,12 +843,9 @@ async function deleteFloorplan(id) {
       originalFile.value = null
       draw()
     }
-    
-    // 🔸 Обновляем список
+
     await loadFloorplansList()
-    
     alert('План удалён')
-    
   } catch (error) {
     console.error('❌ Ошибка удаления:', error)
     alert('Не удалось удалить: ' + (error.response?.data?.error || error.message))
@@ -898,62 +857,45 @@ async function saveResults() {
     alert('Файл не выбран и план не загружен!')
     return
   }
-  
+
   try {
     const formData = new FormData()
-    const url = selectedFloorplanId.value 
+    const url = selectedFloorplanId.value
       ? roomAnalyticsEndpoints.roomAnalytics.FloorplanDetail(selectedFloorplanId.value)
       : roomAnalyticsEndpoints.roomAnalytics.FloorplanSave
-    
+
     const method = selectedFloorplanId.value ? 'put' : 'post'
-    
+
     if (originalFile.value) {
       formData.append('image', originalFile.value)
     }
-    
-    // Сериализация аннотаций
-    const serializeAnnotation = (a) => ({
-      id: a.id,
-      mode: a.mode,
-      type: a.type,
-      label: a.label,
-      bbox: [
-        Math.round(a.x),                    // min_x
-        Math.round(a.x + a.width),          // max_x  ← ПРАВИЛЬНО!
-        Math.round(a.y),                    // min_y
-        Math.round(a.y + a.height)          // max_y
-      ],
-      room: furnitureRoomMap.value[a.id] || null,
-    })
-    
+
     const annotationsData = {
       rooms: roomAnnotations.map(serializeAnnotation),
       walls: wallAnnotations.map(serializeAnnotation),
       furniture: furnitureAnnotations.map(serializeAnnotation),
     }
-    
+
     formData.append('name', `floorplan_${Date.now()}`)
     formData.append('width', imgWidth?.toString() || '0')
     formData.append('height', imgHeight?.toString() || '0')
     formData.append('pixel_to_m_in_square', pixelToMSquare.value)
-    formData.append('square_of_habitation',userSquareInput.value)
+    formData.append('square_of_habitation', userSquareInput.value)
     formData.append('data', JSON.stringify(annotationsData))
-    
+
     const response = await apiClient[method](
       url,
       formData,
       { headers: { 'Content-Type': 'multipart/form-data' } }
     )
-    
+
     console.log('✅ Успешно сохранено:', response.data)
     alert(`План сохранён!\nID: ${response.data.floorplan_id || selectedFloorplanId.value}`)
-    
-    // 🔸 Если это было создание — обновляем список
+
     if (!selectedFloorplanId.value) {
       await loadFloorplansList()
       selectedFloorplanId.value = response.data.floorplan_id
     }
-    
   } catch (error) {
     console.error('❌ Ошибка сохранения:', error)
     alert('Ошибка: ' + (error.response?.data?.error || error.message))
@@ -961,13 +903,12 @@ async function saveResults() {
 }
 //#endregion
 
-//#region Ввод/вывод  данных
+//#region Ввод/вывод данных
 const userSquareInput = ref(null)
 
 const pixelToMSquare = computed(() => {
   const totalPixels = (imgWidth || 0) * (imgHeight || 0)
   const totalSquare = userSquareInput.value || 0
-  
   if (totalPixels > 0 && totalSquare > 0) {
     return totalSquare / totalPixels
   }
@@ -977,35 +918,91 @@ const pixelToMSquare = computed(() => {
 const formatPixelScale = computed(() => {
   const val = pixelToMSquare.value
   if (val <= 0) return '—'
-  else return `${val.toFixed(5)} м²/px`
+  return `${val.toFixed(5)} м²/px`
 })
 
 function formatDate(isoString) {
   if (!isoString) return ''
   const d = new Date(isoString)
-  return d.toLocaleDateString('ru-RU', { 
+  return d.toLocaleDateString('ru-RU', {
     day: '2-digit', month: '2-digit', year: '2-digit',
-    hour: '2-digit', minute: '2-digit' 
+    hour: '2-digit', minute: '2-digit'
   })
 }
-
 //#endregion
 
-//#region обработка ошибок
+//#region Очистка редактора
+function clearEditor() {
+  const hasAnnotations = roomAnnotations.length > 0 ||
+                         wallAnnotations.length > 0 ||
+                         furnitureAnnotations.length > 0
+  const hasImage = imageLoaded.value
+  const hasFloorplan = selectedFloorplanId.value !== null
+  const hasUnsavedChanges = hasAnnotations || originalFile.value !== null
 
-function onImageError(e, fp) {
-  console.error(`❌ Ошибка загрузки превью для плана ${fp?.id}:`, e)
+  let confirmMessage = 'Это действие полностью очистит редактор:\n\n'
+  const actions = []
+
+  if (hasImage) actions.push('• Удалит изображение плана')
+  if (hasAnnotations) actions.push('• Удалит все аннотации')
+  if (hasFloorplan) actions.push('• Отвяжет текущий план #' + selectedFloorplanId.value)
+  if (originalFile.value) actions.push('• Сбросит загруженный файл')
+
+  if (actions.length === 0) {
+    alert('Редактор уже пуст')
+    return
+  }
+
+  confirmMessage += actions.join('\n') + '\n\nПродолжить?'
+  if (!confirm(confirmMessage)) return
+
+  roomAnnotations.splice(0, roomAnnotations.length)
+  wallAnnotations.splice(0, wallAnnotations.length)
+  furnitureAnnotations.splice(0, furnitureAnnotations.length)
+  img = null
+  imgWidth = 0
+  imgHeight = 0
+  imageLoaded.value = false
+  originalFile.value = null
+  if (fileInput.value) fileInput.value.value = ''
+  selectedObject.value = null
+  selectedTool.value = null
+  selectionCycle.key = ''
+  selectionCycle.index = -1
+  nextId = 1
+  scale.value = 1
+  offsetX.value = 0
+  offsetY.value = 0
+  userSquareInput.value = null
+  selectedFloorplanId.value = null
+  draw()
+}
+
+function goToQuestionnaire() {
+  if (!selectedFloorplanId.value) {
+    alert('Сначала сохраните план в базу данных')
+    return
+  }
+  router.push({
+    name: 'QuestionnaireView',
+    query: { floorplanId: selectedFloorplanId.value }
+  })
+}
+//#endregion
+
+//#region Обработка ошибок
+function onImageError(e) {
   e.target.src = 'data:image/svg+xml,' + encodeURIComponent(`
     <svg xmlns="http://www.w3.org/2000/svg" width="160" height="90">
       <rect width="100%" height="100%" fill="#e9ecef"/>
-      <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" 
+      <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle"
             fill="#6c757d" font-family="sans-serif" font-size="12">Нет изображения</text>
     </svg>
   `)
 }
 //#endregion
 
-//#region События мыши и клавиатуры
+//#region События мыши
 function onMouseDown(e) {
   if (!imageLoaded.value) return
   const coords = getCanvasCoords(e.clientX, e.clientY)
@@ -1034,7 +1031,6 @@ function onMouseDown(e) {
       interaction.startObj = { x: selectedObject.value.x, y: selectedObject.value.y }
       return
     }
-    // Clicked outside selected object -> deselect and start pan
     selectedObject.value = null
   }
 
@@ -1066,23 +1062,15 @@ function onMouseMove(e) {
     if (interaction.handle.includes('l')) { x += dx; w -= dx }
     if (interaction.handle.includes('b')) h += dy
     if (interaction.handle.includes('t')) { y += dy; h -= dy }
-
-    // Prevent flipping/negative size
     if (w < 5) { w = 5; if (interaction.handle.includes('l')) x = interaction.startObj.x + interaction.startObj.w - 5 }
     if (h < 5) { h = 5; if (interaction.handle.includes('t')) y = interaction.startObj.y + interaction.startObj.h - 5 }
-
     obj.x = x; obj.y = y; obj.width = w; obj.height = h
   }
   draw()
 }
 
-function onMouseUp() {
-  endInteraction({ commitDraw: true })
-}
-
-function onMouseLeave() {
-  endInteraction({ commitDraw: false })
-}
+function onMouseUp() { endInteraction({ commitDraw: true }) }
+function onMouseLeave() { endInteraction({ commitDraw: false }) }
 
 function onDoubleClick(e) {
   if (!imageLoaded.value) return
@@ -1110,22 +1098,12 @@ function onDoubleClick(e) {
 
 function onWindowKeydown(e) {
   if (e.key !== 'Escape') return
-  if (interaction.type === 'draw') {
-    endInteraction({ commitDraw: false })
-  }
-  if (selectedTool.value) {
-    selectedTool.value = null
-  }
-  if (interaction.type=== 'resize'){
-    interaction.type= 'idle'
-  }
-  if(selectedObject.value){
-    selectedObject.value=null
-  }
-
+  if (interaction.type === 'draw') endInteraction({ commitDraw: false })
+  if (selectedTool.value) selectedTool.value = null
+  if (interaction.type === 'resize') interaction.type = 'idle'
+  if (selectedObject.value) selectedObject.value = null
   draw()
 }
-
 //#endregion
 
 //#region File handling
@@ -1134,10 +1112,8 @@ function triggerFileInput() { fileInput.value.click() }
 function onFileChange(e) {
   const file = e.target.files[0]
   if (!file) return
-
   originalFile.value = file
-  userSquareInput.value = null // 🔹 Сбрасываем площадь для нового файла
-
+  userSquareInput.value = null
   const reader = new FileReader()
   reader.onload = (ev) => {
     img = new Image()
@@ -1153,64 +1129,43 @@ function onFileChange(e) {
 }
 //#endregion
 
-//#region ONNNX
-
+//#region ONNX
 function runONNXDetection() {
   alert('Функция детекции объектов через ONNX будет доступна после подключения модели.')
 }
 //#endregion
 
-//#region Загрузка и закрытие сайта
-onMounted(async() => {
+//#region Жизненный цикл
+onMounted(async () => {
   nextTick(() => draw())
-  
+
   try {
     const [roomsRes, wallsRes, furnitureRes] = await Promise.allSettled([
       apiClient.get(roomAnalyticsEndpoints.roomAnalytics.RoomTypesList),
       apiClient.get(roomAnalyticsEndpoints.roomAnalytics.ConstrucElementTypesList),
       apiClient.get(roomAnalyticsEndpoints.roomAnalytics.FurnitureTypesList),
     ])
-    
-    // 🔹 Универсальная функция извлечения данных
+
     const extractData = (result) => {
       if (result.status !== 'fulfilled') return []
-      // Проверяем структуру ответа
       const data = result.value?.data || result.value
-      if (!Array.isArray(data)) {
-        console.warn('Expected array but got:', data)
-        return []
-      }
-      
+      if (!Array.isArray(data)) return []
       return data
     }
-    
-    // 🔹 RoomTypes
-    const roomsData = extractData(roomsRes)
-    roomTypes.value = roomsData.map(rt => ({
-      id: rt.id,
-      label: rt.label,
-      color: rt.color || '#0d6efd'
-    }))
 
-    const wallsData = extractData(wallsRes)
-    wallTypes.value = wallsData.map(wt => ({
-      id: wt.id,
-      label: wt.label,
-      color: wt.color
+    roomTypes.value = extractData(roomsRes).map(rt => ({
+      id: rt.id, label: rt.label, color: rt.color || '#0d6efd'
     }))
-    
-    // 🔹 FurnitureTypes
-    const furnitureData = extractData(furnitureRes)
-    furnitureTypes.value = furnitureData.map(ft => ({
-      id: ft.id,
-      label: ft.label,
-      color: ft.color
+    wallTypes.value = extractData(wallsRes).map(wt => ({
+      id: wt.id, label: wt.label, color: wt.color
     }))
-    
+    furnitureTypes.value = extractData(furnitureRes).map(ft => ({
+      id: ft.id, label: ft.label, color: ft.color
+    }))
   } catch (error) {
     console.error('❌ Failed to load types:', error)
   }
-  
+
   window.addEventListener('resize', onWindowResize)
   window.addEventListener('mouseup', onMouseUp)
   window.addEventListener('keydown', onWindowKeydown)
@@ -1221,7 +1176,6 @@ onBeforeUnmount(() => {
   window.removeEventListener('mouseup', onMouseUp)
   window.removeEventListener('keydown', onWindowKeydown)
 })
-
 //#endregion
 
 </script>

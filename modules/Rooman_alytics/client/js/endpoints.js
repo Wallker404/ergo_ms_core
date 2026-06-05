@@ -33,5 +33,17 @@ export const roomAnalyticsEndpoints = {
 
     FormulasList: 'Rooman_alytics/formulas/',
     FormulaDetail: (id) => `Rooman_alytics/formulas/${id}/`,
+    GetCriteryQuestionsAndParams: 'Rooman_alytics/criteries/questionsandparams/',
+    AutoCountingMethodsList: 'Rooman_alytics/auto-counting-methods/',
+    CriterionMethods: (criterionId) =>
+      `Rooman_alytics/criteries/${criterionId}/methods/`,
+    CriterionSystemEquation: (criterionId) =>
+      `Rooman_alytics/criteries/${criterionId}/system-equation/`,
+    
+    // Глобальные параметры
+    GlobalParametersList: 'Rooman_alytics/global-parameters/',
+    
+    // Все критерии
+    AllCriteriaList: 'Rooman_alytics/all-criteria/',
   },
 }

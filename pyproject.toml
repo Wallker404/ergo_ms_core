@@ -15,6 +15,7 @@ packages = [
 
 [tool.poetry.dependencies]
 python = ">=3.12,<3.13"
+simpleeval = "^0.9.13"
 django = {path = "core/django", develop = true}
 djangorestframework = {path = "core/django_rest_framework", develop = true}
 django-cors-headers = ">=4.7.0"

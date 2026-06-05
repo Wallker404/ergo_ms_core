@@ -39,5 +39,35 @@ urlpatterns = [
     path('limit-params/<int:pk>/', LimitParamDetailView.as_view(), name='limit_params_detail'),
 
     path('formulas/', FormulaListView.as_view(), name="formulas list"),
-    path('formulas/<int:pk>/', FormulaDetailView.as_view(), name="formulas detail")
+    path('formulas/<int:pk>/', FormulaDetailView.as_view(), name="formulas detail"),
+    path('criteries/questionsandparams/', ActiveCriterionListView.as_view(), name='Questions and params'),
+    path(
+        'special-methods/<int:id>/<int:floorplan_id>/', 
+        TestView.as_view(), 
+        name='special-method-test'
+    ),
+    path('auto-counting-methods/',
+         AutoCountingMethodListView.as_view(),
+         name='auto-counting-methods'),
+    path('criteries/<int:criterion_id>/methods/',
+         CriterionMethodsView.as_view(),
+         name='criterion-methods'),
+
+        path('criteries/<int:criterion_id>/system-equation/',
+         CriterionSystemEquationView.as_view(),
+         name='criterion-system-equation'),
+    
+    # Глобальные параметры
+    path('global-parameters/',
+         GlobalParametersListView.as_view(),
+         name='global-parameters'),
+    
+    # Все критерии
+    path('all-criteria/',
+         AllCriteriaListView.as_view(),
+         name='all-criteria'),
+
+
+     path('reports/', ReportCreateView.as_view(), name='report-create'),
+    path('reports/<int:pk>/', ReportDetailView.as_view(), name='report-detail'),
 ]

@@ -55,27 +55,12 @@ export default {
       "requiresAuth": true
     }
   },
-  "ClassificationAnalysis": {
-    "path": "/room-analytics/classification-analysis",
-    "component": "@/modules/Rooman_alytics/client/AnalyticsInsruments/ClassificationAnalysis.vue",
-    "meta": {
-      "title": "Классификация",
-      "requiresAuth": true
-    }
-  },
+
   "ClusteringAnalysis": {
     "path": "/room-analytics/clustering-analysis",
     "component": "@/modules/Rooman_alytics/client/AnalyticsInsruments/ClusteringAnalysis.vue",
     "meta": {
       "title": "Кластеризационный анализ",
-      "requiresAuth": true
-    }
-  },
-  "BayesianAnalysis": {
-    "path": "/room-analytics/bayesian-analysis",
-    "component": "@/modules/Rooman_alytics/client/AnalyticsInsruments/BayesianAnalysis.vue",
-    "meta": {
-      "title": "Байсовый анализ",
       "requiresAuth": true
     }
   },
@@ -103,8 +88,27 @@ export default {
   "path": "/room-analytics/formulacustom/:criterionId",
   "component": "@/modules/Rooman_alytics/client/AnalyticsInsruments/Formularedact.vue",
   "meta": {
-    "title": "Настройка анкеты",
+    "title": "Настройка формулы",
     "requiresAuth": true
   }
-}
+},
+"QuestionnaireView": {
+  "name": "QuestionnaireView",
+  "path": "/room-analytics/form",
+  "component": "@/modules/Rooman_alytics/client/AnalyticsModule/QuestionnaireView.vue",
+  "meta": {
+    "title": "Прохождение анкеты",
+    "requiresAuth": true
+  }
+},
+
+"CriterionSystemEquationPage": {
+  "name": 'CriterionSystemEquationPage',
+    "path": '/room-analytics/criterion/:criterionId/system-equation',
+    "component": "@/modules/Rooman_alytics/client/AnalyticsInsruments/CriterionSystemEquationPage.vue",
+    "meta": { 
+      "title": "Работа с системой уравнений для критерия",
+      "requiresAuth": true
+    }
+  }
 }
